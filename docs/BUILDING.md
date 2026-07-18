@@ -1,26 +1,24 @@
 # Building & packaging the JCEF Orion fork
 
-This document covers the **Orion fork** additions: the portable jar, the CI/CD
-workflows, and how the Orion IDE consumes the result. For the full native JCEF
-build (CEF download, JNI, per-OS toolchains) see the upstream docs and the
-top-level `CLAUDE.md`.
+This document covers the **Orion fork** additions: the portable Java API jar and
+how the Orion IDE consumes it. For the full native JCEF build (CEF download,
+JNI, per-OS toolchains) see the upstream docs and the top-level `CLAUDE.md`.
 
-## The two-layer model (why the jar is portable)
+## The two-layer model
 
 JCEF is Java + native. The Orion fork changes **only the Java layer** (a
-dedicated CEF owner thread + async init APIs — see `MODIFICATIONS.md`). That has
+dedicated CEF owner thread + async init APIs; see `MODIFICATIONS.md`). That has
 an important consequence:
 
 | Layer | OS-specific? | Who provides it |
 |---|---|---|
-| `jcef-orion.jar` (the `org.cef.*` classes) | **No** — pure Java | This fork's build |
-| `libjcef` / `jcef.dll` + CEF runtime (`libcef`, `*.pak`, `icudtl.dat`, `locales/`) | Yes (~200 MB/OS) | Downloaded per-OS at runtime by `jcefmaven` |
+| `jcef-orion.jar` (`org.cef.*`) | No; pure Java | This fork's build |
+| `libjcef` / `jcef.dll` + CEF runtime (`libcef`, `*.pak`, `icudtl.dat`, `locales/`) | Yes | The per-OS application package, for example the Orion `jpackage` build |
 
-Because the fork adds **no native methods**, its jar is a drop-in replacement for
-the upstream `org.cef` classes and is byte-for-byte identical on every OS. You
-can take `jcef-orion.jar` to Windows, Linux or macOS and it runs — the heavy,
-OS-specific CEF runtime is fetched on first use, exactly as the Orion IDE already
-does today.
+Because the fork adds no native methods, its jar is a drop-in replacement for
+the upstream `org.cef` classes. The browser runtime still belongs in the
+platform-specific app package. In Orion's case, `jpackage` can produce one
+package per OS containing the right native CEF runtime.
 
 ## Build locally
 
@@ -64,34 +62,6 @@ SHA256SUMS.txt
 `N_Initialize` runs, the demo's counter, spinner, text field and buttons stay
 responsive in dedicated mode and freeze in legacy mode.
 
-## GitHub Actions workflows
-
-| Workflow | Trigger | What it does |
-|---|---|---|
-| `.github/workflows/native-binaries.yml` | manual, tag `native-v*` | Builds the portable jar plus per-OS JCEF redistributables (`win64`, `linux64`, `macosx64`), publishes them to a GitHub Release, optionally commits them to `vendor/jcef`, then deletes temporary Actions artifacts. |
-
-### Build native release assets
-
-The `Native Binaries` workflow mirrors the SwingTools-style native packaging
-flow: it builds the portable `jcef-orion-1.0.0.jar`, builds `win64`, `linux64`
-and `macosx64` in a matrix, uploads each output as a temporary artifact,
-publishes those files to a GitHub Release, optionally commits the generated
-files into `vendor/jcef`, then deletes the temporary Actions artifacts for that
-run.
-
-Run it manually from GitHub Actions with a release tag such as
-`native-v1.0.0`. The release will contain the portable jar, sources jar, POM,
-checksums and one native redistributable archive per platform.
-
-Keep `commit_binaries=true` when running manually if you want the workflow to
-push the generated files back to the selected branch. The committed files live
-under `vendor/jcef/java`, `vendor/jcef/win64`, `vendor/jcef/linux64` and
-`vendor/jcef/macosx64`, and are tracked with Git LFS because CEF binaries are
-too large for normal Git blobs.
-
-Tagging `native-v*` runs the release flow only; it does not commit generated
-binaries back to a branch.
-
 ### Verify a downloaded release
 
 ```sh
@@ -100,13 +70,12 @@ sha256sum -c SHA256SUMS.txt
 
 ## How the Orion IDE consumes the fork
 
-Orion already uses `me.friwi.jcefmaven.CefAppBuilder`, which downloads the CEF
-runtime per-OS. To activate the fork's behavior:
+Put **`jcef-orion.jar` ahead of** jcefmaven's bundled `jcef.jar` on the
+classpath (or module path) so the fork's `org.cef.*` classes win. The native CEF
+runtime should be provided by the current OS package, such as Orion's `jpackage`
+output.
 
-1. Put **`jcef-orion.jar` ahead of** jcefmaven's bundled `jcef.jar` on the
-   classpath (or module path) so the fork's `org.cef.*` classes win. jcefmaven
-   still downloads the matching CEF 146 native runtime for the current OS.
-2. Select the dedicated mode on Windows/Linux before initializing:
+1. Select the dedicated mode on Windows/Linux before initializing:
 
    ```java
    CefSettings settings = builder.getCefSettings();
@@ -147,3 +116,4 @@ runtime per-OS. To activate the fork's behavior:
 - **Upstream sync:** the fork touches a small, isolated set of Java files (see
   `MODIFICATIONS.md`), so rebasing onto a newer upstream JCEF should be low
   friction.
+

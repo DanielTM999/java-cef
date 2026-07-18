@@ -83,7 +83,6 @@ CefSettings.CefInitializationMode.DEDICATED_CEF_THREAD  (Orion; Windows/Linux on
 | `java/tests/orion/OrionAsyncInitExample.java` | Runnable Swing demo comparing `LEGACY_EDT` vs `DEDICATED_CEF_THREAD`. |
 | `MODIFICATIONS.md` | This file. |
 | `docs/BUILDING.md` | Build/packaging/workflow guide + Orion integration. |
-| `.github/workflows/native-binaries.yml` | Build the portable jar, build per-OS native redistributables, publish a GitHub Release, optionally commit generated binaries to `vendor/jcef`, then delete temporary Actions artifacts. |
 | `scripts/package-portable.sh` | Build the portable jar + sources jar + POM + `SHA256SUMS.txt`. |
 | `scripts/validate-package.sh` | Validate a produced distribution (files, checksums, class presence). |
 
