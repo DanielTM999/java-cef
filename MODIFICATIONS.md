@@ -10,7 +10,7 @@ Chromium / third-party notices are preserved unchanged.
 | Field | Value |
 |---|---|
 | Fork name | JCEF (Orion fork) |
-| Original project | JCEF — https://github.com/chromiumembedded/java-cef |
+| Original project | JCEF - https://github.com/chromiumembedded/java-cef |
 | Base JCEF commit (upstream) | `6d3e8ca` |
 | CEF version | `146.0.10+g8219561+chromium-146.0.7680.179` (see `CMakeLists.txt`) |
 | First modification date | 2026-07-18 |
@@ -19,7 +19,7 @@ Chromium / third-party notices are preserved unchanged.
 ## Summary of changes
 
 Upstream JCEF forces the global CEF context lifecycle (`CefInitialize`,
-`CefShutdown`, and — when applicable — `CefDoMessageLoopWork`) onto the AWT Event
+`CefShutdown`, and when applicable `CefDoMessageLoopWork`) onto the AWT Event
 Dispatch Thread (EDT) via `SwingUtilities.invokeAndWait()`. As a result the first
 real browser open blocks the whole UI while Chromium initializes.
 
@@ -30,44 +30,43 @@ survives future upstream merges.
 
 ### New initialization modes
 
-```
-CefSettings.CefInitializationMode.LEGACY_EDT           (default; upstream behavior)
-CefSettings.CefInitializationMode.DEDICATED_CEF_THREAD  (Orion; Windows/Linux only)
+```text
+CefSettings.CefInitializationMode.LEGACY_EDT             (default; upstream behavior)
+CefSettings.CefInitializationMode.DEDICATED_CEF_THREAD   (Orion; Windows/Linux only)
 ```
 
 - The mode is resolved **once**, before pre-initialization, in the centralized
   `CefApp.resolveInitializationMode(CefSettings)`.
 - The default is `LEGACY_EDT`, so existing code and upstream users are unaffected.
-- On macOS and any non-Windows/Linux platform, `DEDICATED_CEF_THREAD` automatically
-  **falls back to `LEGACY_EDT`** with an explanatory log line (macOS requires the
-  process main thread and a Cocoa loop).
+- On macOS and any non-Windows/Linux platform, `DEDICATED_CEF_THREAD`
+  automatically falls back to `LEGACY_EDT` with an explanatory log line because
+  macOS requires the process main thread and a Cocoa loop.
 
-### New public API (additive, non-breaking)
+### New public API
 
-- `CompletableFuture<CefApp> CefApp.initializeAsync()` — idempotent; concurrent
+- `CompletableFuture<CefApp> CefApp.initializeAsync()` - idempotent; concurrent
   callers share the same future; native pre-init/init each run at most once.
-- `CompletableFuture<CefClient> CefApp.createClientAsync()` — waits for
+- `CompletableFuture<CefClient> CefApp.createClientAsync()` - waits for
   initialization without blocking the caller.
-- `CefApp.createClient()` — in `DEDICATED_CEF_THREAD` mode requires the app to be
-  `INITIALIZED` and throws a clear `IllegalStateException` otherwise (it no longer
-  silently triggers heavy native init). In `LEGACY_EDT` mode it is unchanged.
+- `CefApp.createClient()` - in `DEDICATED_CEF_THREAD` mode requires the app to be
+  `INITIALIZED` and throws a clear `IllegalStateException` otherwise. In
+  `LEGACY_EDT` mode it is unchanged.
 - `CefInitializationMode CefApp.getInitializationMode()`.
 
 ### Supported platforms for `DEDICATED_CEF_THREAD`
 
 | Platform | Behavior |
 |---|---|
-| Windows x86_64 | Dedicated `Orion-JCEF-Main` thread (when requested) |
-| Linux x86_64 | Dedicated `Orion-JCEF-Main` thread (when requested) |
-| macOS (any arch) | Forced `LEGACY_EDT` (documented, with log line) |
+| Windows x86_64 | Dedicated `Orion-JCEF-Main` thread, when requested |
+| Linux x86_64 | Dedicated `Orion-JCEF-Main` thread, when requested |
+| macOS, any arch | Forced `LEGACY_EDT`, documented with a log line |
 | Other | Forced `LEGACY_EDT` |
 
 ### Known limitations
 
 - OSR / windowless rendering uses an external message pump; the Swing `Timer`
-  still schedules on the EDT, but the native `N_DoMessageLoopWork` call is routed
-  to `Orion-JCEF-Main`. Windowed rendering (the Orion use case) uses
-  `multi_threaded_message_loop` and is unaffected.
+  still schedules on the EDT, but the native `N_DoMessageLoopWork` call is
+  routed to `Orion-JCEF-Main`.
 - No native C++ change is required for the happy path on Windows/Linux: thread
   ownership consistency is guaranteed on the Java side by always dispatching the
   global-context operations to the same owner thread.
@@ -76,41 +75,51 @@ CefSettings.CefInitializationMode.DEDICATED_CEF_THREAD  (Orion; Windows/Linux on
 
 | File | Purpose |
 |---|---|
-| `java/org/cef/CefMainThread.java` | The dedicated `Orion-JCEF-Main` single-thread executor (AutoCloseable, re-entrant-safe, rejects work after shutdown). |
+| `java/org/cef/CefMainThread.java` | The dedicated `Orion-JCEF-Main` single-thread executor. |
 | `java/org/cef/CefInitializationException.java` | Rich Java exception wrapping native init failures. |
 | `java/tests/junittests/CefMainThreadTest.java` | Pure-Java unit tests for the owner thread. |
 | `java/tests/junittests/CefInitializationModeTest.java` | Pure-Java unit tests for mode resolution / platform fallback. |
 | `java/tests/orion/OrionAsyncInitExample.java` | Runnable Swing demo comparing `LEGACY_EDT` vs `DEDICATED_CEF_THREAD`. |
 | `MODIFICATIONS.md` | This file. |
-| `docs/BUILDING.md` | Build/packaging/workflow guide + Orion integration. |
-| `scripts/package-portable.sh` | Build the portable jar + sources jar + POM + `SHA256SUMS.txt`. |
-| `scripts/validate-package.sh` | Validate a produced distribution (files, checksums, class presence). |
+| `docs/BUILDING.md` | Build/packaging/workflow guide and Orion integration notes. |
+| `scripts/package-portable.sh` | Build the Java API jar with shaded JOGL/GlueGen dependencies, sources jar, POM and `SHA256SUMS.txt`. |
+| `scripts/package-universal.sh` | Embed `win64`, `linux64` and `macosx64` redistributables into `jcef-orion-<version>.jar`. |
+| `scripts/validate-package.sh` | Validate a produced distribution. |
+| `.github/workflows/native-binaries.yml` | Build native redistributables per OS, assemble the shared jar, publish a Release and delete temporary Actions artifacts. |
 
 ## Modified files
 
 | File | Change |
 |---|---|
-| `java/org/cef/CefSettings.java` | Added `CefInitializationMode` enum + `initialization_mode` field (cloned). |
-| `java/org/cef/CefApp.java` | Mode resolution; dedicated owner-thread dispatch for pre-init / init / message-loop / shutdown; `initializeAsync()` / `createClientAsync()`; one-shot native-init guard; logging. Legacy EDT path preserved bit-for-bit. |
-| `tools/compile.sh`, `tools/compile.bat` | Also compile the new `tests/orion` package. |
+| `java/org/cef/CefSettings.java` | Added `CefInitializationMode` enum + `initialization_mode` field. |
+| `java/org/cef/CefApp.java` | Mode resolution; dedicated owner-thread dispatch for pre-init / init / message-loop / shutdown; `initializeAsync()` / `createClientAsync()`; one-shot native-init guard; bundled-native library path lookup; logging. Legacy EDT path preserved. |
+| `java/org/cef/SystemBootstrap.java` | Default loader can extract embedded per-OS native runtime resources from the shared jar and load native libraries from the extracted cache. |
+| `tools/compile.sh`, `tools/compile.bat` | Also compile the new `tests/orion` package; Windows compilation now uses an argument file so `javac` receives expanded source paths reliably. |
+| `tools/make_jar.bat` | Packages class directories with `jar -C` instead of relying on Windows wildcard expansion. |
+| `CMakeLists.txt` | Added `JCEF_DOWNLOAD_CLANG_FORMAT=OFF` option so CI can avoid the Chromium `gsutil` / Python `six.moves` failure while configuring native builds. |
 | `README.md` | Added an "Orion fork" section linking to this file and `docs/BUILDING.md`. |
 
-## Not modified (preserved)
+## Not modified
 
 - `LICENSE.txt` and all copyright headers.
-- Native C++ (`native/context.cpp`, `native/CefApp.cpp`, …) — unchanged.
+- Native C++ (`native/context.cpp`, `native/CefApp.cpp`, etc.).
 - Upstream behavior when `initialization_mode` is left at its default.
 
 ## Distribution model
 
-The fork is distributed as a **portable, OS-independent jar** (`jcef-orion.jar`).
-Because the fork changes only the Java layer, the same jar runs on any OS; the
-heavy CEF runtime (`libcef`, `*.pak`, `icudtl.dat`, `locales/`, ~200 MB/OS) is
-downloaded per-OS at runtime (jcefmaven-style), not bundled and not committed to
-git. See `docs/BUILDING.md` for build, packaging, workflows and Orion integration.
+The fork Release is distributed as a shared `jcef-orion-<version>.jar` containing
+the Java API, shaded JOGL/GlueGen dependencies, and embedded native runtimes for
+`win64`, `linux64` and `macosx64`. At runtime the default loader extracts only
+the current OS runtime to `~/.jcef-orion/<version>/<platform>` and loads it from
+there.
+
+Native binaries are Release assets, not committed to git. The workflow also
+publishes `jcef-distrib-<platform>.tar.gz` for manual inspection or external
+packaging.
+
+See `docs/BUILDING.md` for build, packaging, workflow and Orion integration
+details.
 
 ---
 
-*Pending (optional): a `legal/` bundle aggregating the third-party license texts,
-and — only if the fork ever needs its own native binaries — a per-OS native build
-matrix. Neither is required for the current Java-only, jcefmaven-runtime model.*
+*Pending optional work: a `legal/` bundle aggregating third-party license texts.*

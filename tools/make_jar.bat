@@ -3,20 +3,31 @@
 :: reserved. Use of this source code is governed by a BSD-style license
 :: that can be found in the LICENSE file.
 
-set RETURNCODE=
+set RETURNCODE=0
 setlocal
 
 if "%1" == "" (
 echo ERROR: Please specify a build target: win32 or win64
-set ERRORLEVEL=1
+set RETURNCODE=1
 goto end
 )
-cd ..\out\%1
-jar -cmf manifest\MANIFEST.MF jcef.jar org/cef/*.class org/cef/browser/*.class org/cef/callback/*.class org/cef/handler/*.class org/cef/misc/*.class  org/cef/network/*.class
-jar -cf jcef-tests.jar tests/detailed/*.class tests/detailed/dialog/*.class tests/detailed/handler/* tests/detailed/ui/*.class
+pushd "%~dp0\..\out\%1"
+jar -cmf manifest\MANIFEST.MF jcef.jar -C . org
+if errorlevel 1 (
+set RETURNCODE=1
+goto end
+)
+jar -cf jcef-tests.jar -C . tests
+if errorlevel 1 (
+set RETURNCODE=1
+goto end
+)
 
 :end
-endlocal & set RETURNCODE=%ERRORLEVEL%
+if "%1" == "" goto after_popd
+popd
+:after_popd
+endlocal & set RETURNCODE=%RETURNCODE%
 goto omega
 
 :returncode

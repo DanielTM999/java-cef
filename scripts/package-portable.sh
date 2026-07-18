@@ -5,14 +5,15 @@
 #
 # Orion fork addition. See MODIFICATIONS.md.
 #
-# Builds the portable (OS-independent) distribution artifacts:
-#   - jcef-orion-<version>.jar          (the Java API classes; runs on any OS)
+# Builds the Java API distribution artifacts:
+#   - jcef-orion-<version>.jar          (the Java API classes)
 #   - jcef-orion-<version>-sources.jar  (the matching sources)
 #   - jcef-orion-<version>.pom          (a consumable Maven POM)
 #   - SHA256SUMS.txt                    (checksums of the above)
 #
-# The heavy CEF runtime is NOT bundled: it is downloaded per-OS at runtime
-# (jcefmaven-style). This script can be run locally exactly as CI runs it:
+# This script does not bundle native runtimes. Use package-universal.sh after
+# producing binary_distrib/<platform> outputs to embed win64, linux64 and
+# macosx64 runtimes in the same jar.
 #
 #   tools/compile.sh linux64
 #   scripts/package-portable.sh 146.0.0 dist
@@ -30,14 +31,26 @@ ARTIFACT_ID="jcef-orion"
 ROOT_DIR="$(cd "$(dirname "$0")/.." && pwd)"
 cd "${ROOT_DIR}"
 
-CLASSES_DIR="out/linux64"
+CLASSES_DIR="${JCEF_CLASSES_DIR:-}"
+if [[ -z "${CLASSES_DIR}" ]]; then
+  for candidate in out/linux64 out/win64 out/macosx64 out/linux32 out/win32; do
+    if [[ -d "${candidate}/org" ]]; then
+      CLASSES_DIR="${candidate}"
+      break
+    fi
+  done
+fi
 if [[ ! -d "${CLASSES_DIR}/org" ]]; then
-  echo "ERROR: compiled classes not found at ${CLASSES_DIR}/org." >&2
-  echo "       Run 'tools/compile.sh linux64' first." >&2
+  echo "ERROR: compiled classes not found." >&2
+  echo "       Run 'tools/compile.sh linux64' or 'tools\\compile.bat win64' first." >&2
+  echo "       You can also set JCEF_CLASSES_DIR=out/<platform>." >&2
   exit 1
 fi
+echo "==> Using compiled classes from ${CLASSES_DIR}"
 
 mkdir -p "${OUT_DIR}"
+WORK_DIR="$(mktemp -d)"
+trap 'rm -rf "${WORK_DIR}"' EXIT
 
 JAR_NAME="${ARTIFACT_ID}-${VERSION}.jar"
 SOURCES_NAME="${ARTIFACT_ID}-${VERSION}-sources.jar"
@@ -45,11 +58,26 @@ POM_NAME="${ARTIFACT_ID}-${VERSION}.pom"
 
 echo "==> Building portable jar: ${JAR_NAME}"
 MANIFEST="${CLASSES_DIR}/manifest/MANIFEST.MF"
+GENERATED_MANIFEST="${OUT_DIR}/MANIFEST.MF"
 if [[ -f "${MANIFEST}" ]]; then
-  jar -cmf "${MANIFEST}" "${OUT_DIR}/${JAR_NAME}" -C "${CLASSES_DIR}" org
+  cp "${MANIFEST}" "${GENERATED_MANIFEST}"
 else
-  jar -cf "${OUT_DIR}/${JAR_NAME}" -C "${CLASSES_DIR}" org
+  printf 'Manifest-Version: 1.0\n' > "${GENERATED_MANIFEST}"
 fi
+printf 'Implementation-Title: JCEF Orion\n' >> "${GENERATED_MANIFEST}"
+printf 'Implementation-Version: %s\n' "${VERSION}" >> "${GENERATED_MANIFEST}"
+printf 'Implementation-Vendor: Orion\n' >> "${GENERATED_MANIFEST}"
+jar -cmf "${GENERATED_MANIFEST}" "${OUT_DIR}/${JAR_NAME}" -C "${CLASSES_DIR}" org
+rm -f "${GENERATED_MANIFEST}"
+
+echo "==> Embedding JOGL/GlueGen dependency jars"
+DEPS_DIR="${WORK_DIR}/deps"
+mkdir -p "${DEPS_DIR}"
+for dep_jar in third_party/jogamp/jar/*.jar; do
+  (cd "${DEPS_DIR}" && jar xf "${ROOT_DIR}/${dep_jar}")
+done
+rm -f "${DEPS_DIR}/META-INF/MANIFEST.MF"
+jar uf "${OUT_DIR}/${JAR_NAME}" -C "${DEPS_DIR}" .
 
 echo "==> Building sources jar: ${SOURCES_NAME}"
 jar -cf "${OUT_DIR}/${SOURCES_NAME}" -C java org
@@ -68,8 +96,8 @@ cat > "${OUT_DIR}/${POM_NAME}" <<EOF
   <name>JCEF (Orion fork)</name>
   <description>Java Chromium Embedded Framework, Orion fork with a dedicated CEF
     initialization thread (DEDICATED_CEF_THREAD) so native init never blocks the
-    Swing EDT. OS-independent Java API; the CEF runtime is provided per-OS at
-    runtime (jcefmaven-style).</description>
+    Swing EDT. The jar embeds JOGL/GlueGen classes and Release jars can embed
+    native runtimes for win64, linux64 and macosx64.</description>
   <licenses>
     <license>
       <name>BSD-3-Clause</name>

@@ -1,0 +1,301 @@
+name: Native Binaries
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Artifact version, for example 1.0.0.'
+        required: true
+        default: '1.0.0'
+      release_tag:
+        description: 'Release tag to create/update, for example native-v1.0.0.'
+        required: true
+        default: 'native-v1.0.0'
+  push:
+    tags:
+      - 'native-v*'
+
+permissions:
+  contents: read
+
+jobs:
+  build-java:
+    name: Build Java API
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.ver.outputs.version }}
+      release_tag: ${{ steps.ver.outputs.release_tag }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup JDK 21
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '21'
+
+      - name: Resolve version and release tag
+        id: ver
+        run: |
+          set -euo pipefail
+          if [[ "${GITHUB_REF}" == refs/tags/* ]]; then
+            RELEASE_TAG="${GITHUB_REF#refs/tags/}"
+            VERSION="${RELEASE_TAG#native-v}"
+            VERSION="${VERSION#v}"
+          else
+            RELEASE_TAG="${{ github.event.inputs.release_tag }}"
+            VERSION="${{ github.event.inputs.version }}"
+          fi
+
+          echo "release_tag=${RELEASE_TAG}" >> "$GITHUB_OUTPUT"
+          echo "version=${VERSION}" >> "$GITHUB_OUTPUT"
+          echo "Release tag: ${RELEASE_TAG}"
+          echo "Version: ${VERSION}"
+
+      - name: Compile Java
+        run: |
+          set -euo pipefail
+          chmod +x tools/compile.sh
+          tools/compile.sh linux64
+
+      - name: Package Java API jar
+        run: |
+          set -euo pipefail
+          chmod +x scripts/package-portable.sh
+          scripts/package-portable.sh "${{ steps.ver.outputs.version }}" dist
+
+      - name: Upload Java API artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: jcef-orion-java-api
+          path: dist/
+          if-no-files-found: error
+          retention-days: 1
+
+  build-native:
+    name: Build native ${{ matrix.platform }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: windows-2022
+            platform: win64
+          - os: ubuntu-latest
+            platform: linux64
+          - os: macos-15-intel
+            platform: macosx64
+            project_arch: x86_64
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup JDK 21
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '21'
+
+      - name: Install Linux dependencies
+        if: runner.os == 'Linux'
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install -y build-essential ninja-build libgtk-3-dev
+
+      - name: Install macOS dependencies
+        if: runner.os == 'macOS'
+        run: |
+          set -euo pipefail
+          brew install ninja ant
+
+      - name: Setup MSVC environment
+        if: runner.os == 'Windows'
+        uses: ilammy/msvc-dev-cmd@v1
+        with:
+          arch: x64
+
+      - name: Install Windows dependencies
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          if (-not (Get-Command ninja -ErrorAction SilentlyContinue)) {
+            choco install ninja -y --no-progress
+          }
+          ninja --version
+
+      - name: Configure native build (Linux)
+        if: runner.os == 'Linux'
+        run: cmake -S . -B jcef_build -G Ninja -DCMAKE_BUILD_TYPE=Release -DJCEF_DOWNLOAD_CLANG_FORMAT=OFF
+
+      - name: Configure native build (macOS)
+        if: runner.os == 'macOS'
+        run: cmake -S . -B jcef_build -G Ninja -DPROJECT_ARCH=${{ matrix.project_arch }} -DCMAKE_BUILD_TYPE=Release -DJCEF_DOWNLOAD_CLANG_FORMAT=OFF
+
+      - name: Configure native build (Windows)
+        if: runner.os == 'Windows'
+        run: cmake -S . -B jcef_build -G Ninja -DCMAKE_BUILD_TYPE=Release -DJCEF_DOWNLOAD_CLANG_FORMAT=OFF
+
+      - name: Build native targets
+        run: cmake --build jcef_build --config Release --parallel
+
+      - name: Compile Java classes (Linux)
+        if: runner.os == 'Linux'
+        run: |
+          set -euo pipefail
+          chmod +x tools/compile.sh
+          tools/compile.sh linux64
+
+      - name: Compile Java classes (Windows)
+        if: runner.os == 'Windows'
+        shell: cmd
+        run: |
+          cd tools
+          call compile.bat win64
+
+      - name: Build redistributable (Linux)
+        if: runner.os == 'Linux'
+        run: |
+          set -euo pipefail
+          chmod +x tools/make_distrib.sh
+          tools/make_distrib.sh linux64
+
+      - name: Build redistributable (macOS)
+        if: runner.os == 'macOS'
+        run: |
+          set -euo pipefail
+          chmod +x tools/make_distrib.sh
+          tools/make_distrib.sh macosx64
+
+      - name: Build redistributable (Windows)
+        if: runner.os == 'Windows'
+        shell: cmd
+        run: |
+          cd tools
+          call make_distrib.bat win64
+
+      - name: Archive redistributable
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p dist-archives
+          tar -czf "dist-archives/jcef-distrib-${{ matrix.platform }}.tar.gz" "binary_distrib/${{ matrix.platform }}"
+          ls -lh dist-archives
+
+      - name: Upload redistributable
+        uses: actions/upload-artifact@v4
+        with:
+          name: jcef-distrib-${{ matrix.platform }}
+          path: dist-archives/jcef-distrib-${{ matrix.platform }}.tar.gz
+          if-no-files-found: error
+          retention-days: 1
+
+  build-universal:
+    name: Build universal jar
+    needs:
+      - build-java
+      - build-native
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup JDK 21
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '21'
+
+      - name: Download temporary artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: universal-input
+
+      - name: Prepare universal jar inputs
+        run: |
+          set -euo pipefail
+          mkdir -p dist binary_distrib
+          cp universal-input/jcef-orion-java-api/jcef-orion-${{ needs.build-java.outputs.version }}.jar dist/
+          cp universal-input/jcef-orion-java-api/jcef-orion-${{ needs.build-java.outputs.version }}-sources.jar dist/
+          cp universal-input/jcef-orion-java-api/jcef-orion-${{ needs.build-java.outputs.version }}.pom dist/
+
+          for archive in universal-input/jcef-distrib-*/*.tar.gz; do
+            tar -xzf "$archive"
+          done
+
+      - name: Assemble universal jar
+        env:
+          REQUIRED_PLATFORMS: win64 linux64 macosx64
+        run: |
+          set -euo pipefail
+          chmod +x scripts/package-universal.sh
+          scripts/package-universal.sh "${{ needs.build-java.outputs.version }}" dist binary_distrib
+          ls -lh dist
+
+      - name: Upload universal jar artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: jcef-orion-universal
+          path: dist/
+          if-no-files-found: error
+          retention-days: 1
+
+  release:
+    name: Publish release
+    needs:
+      - build-java
+      - build-native
+      - build-universal
+    runs-on: ubuntu-latest
+    permissions:
+      actions: write
+      contents: write
+    steps:
+      - name: Download temporary artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: release-assets
+
+      - name: Publish GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ needs.build-java.outputs.release_tag }}
+          name: ${{ needs.build-java.outputs.release_tag }}
+          fail_on_unmatched_files: true
+          overwrite_files: true
+          files: |
+            release-assets/jcef-orion-universal/jcef-orion-${{ needs.build-java.outputs.version }}.jar
+            release-assets/jcef-orion-universal/jcef-orion-${{ needs.build-java.outputs.version }}-sources.jar
+            release-assets/jcef-orion-universal/jcef-orion-${{ needs.build-java.outputs.version }}.pom
+            release-assets/jcef-orion-universal/SHA256SUMS.txt
+            release-assets/jcef-distrib-*/*.tar.gz
+
+  cleanup-actions-artifacts:
+    name: Delete temporary Actions artifacts
+    needs:
+      - build-java
+      - build-native
+      - build-universal
+      - release
+    if: always()
+    runs-on: ubuntu-latest
+    permissions:
+      actions: write
+      contents: read
+    steps:
+      - name: Delete temporary Actions artifacts
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPOSITORY: ${{ github.repository }}
+          RUN_ID: ${{ github.run_id }}
+        run: |
+          set -euo pipefail
+          artifacts="$(gh api "repos/${REPOSITORY}/actions/runs/${RUN_ID}/artifacts" --paginate --jq '.artifacts[].id')"
+          if [[ -z "${artifacts}" ]]; then
+            echo "No temporary artifacts found."
+            exit 0
+          fi
+
+          for artifact_id in ${artifacts}; do
+            echo "Deleting artifact ${artifact_id}"
+            gh api --method DELETE "repos/${REPOSITORY}/actions/artifacts/${artifact_id}"
+          done

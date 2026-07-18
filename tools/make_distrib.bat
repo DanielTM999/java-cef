@@ -3,14 +3,14 @@
 :: reserved. Use of this source code is governed by a BSD-style license
 :: that can be found in the LICENSE file.
 
-set RETURNCODE=
+set RETURNCODE=0
 setlocal
 
-cd ..
+pushd "%~dp0\.."
 
 if "%1" == "" (
 echo ERROR: Please specify a target platform: win32 or win64
-set ERRORLEVEL=1
+set RETURNCODE=1
 goto end
 )
 set DISTRIB_PLATFORM="%1"
@@ -23,6 +23,7 @@ set OUT_PATH=".\out\%1"
 set OUT_BINARY_PATH=".\jcef_build\native\Release"
 if not exist %OUT_BINARY_PATH% (
 echo ERROR: Native Release build output path does not exist
+set RETURNCODE=1
 goto end
 )
 
@@ -41,6 +42,10 @@ set JOGAMP_JAR_SUFFIX="amd64"
 :: Create the JCEF jar file.
 cd tools
 call make_jar.bat %1
+if errorlevel 1 (
+set RETURNCODE=1
+goto end
+)
 cd ..
 
 :: Create the JCEF documentation.
@@ -93,7 +98,8 @@ xcopy /sfy %JOGAMP_PATH%\*.LICENSE.txt %DISTRIB_PATH%
 xcopy /sfy %TOOLS_DISTRIB_PATH%\* %DISTRIB_PATH% /exclude:.\tools\distrib\EXCLUDE_FILES.txt
 
 :end
-endlocal & set RETURNCODE=%ERRORLEVEL%
+popd
+endlocal & set RETURNCODE=%RETURNCODE%
 goto omega
 
 :returncode
