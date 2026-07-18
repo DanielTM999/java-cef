@@ -127,15 +127,15 @@ jobs:
 
       - name: Configure native build (Linux)
         if: runner.os == 'Linux'
-        run: cmake -S . -B jcef_build -G Ninja -DCMAKE_BUILD_TYPE=Release
+        run: cmake -S . -B jcef_build -G Ninja -DCMAKE_BUILD_TYPE=Release -DJCEF_DOWNLOAD_CLANG_FORMAT=OFF
 
       - name: Configure native build (macOS)
         if: runner.os == 'macOS'
-        run: cmake -S . -B jcef_build -G Ninja -DPROJECT_ARCH=${{ matrix.project_arch }} -DCMAKE_BUILD_TYPE=Release
+        run: cmake -S . -B jcef_build -G Ninja -DPROJECT_ARCH=${{ matrix.project_arch }} -DCMAKE_BUILD_TYPE=Release -DJCEF_DOWNLOAD_CLANG_FORMAT=OFF
 
       - name: Configure native build (Windows)
         if: runner.os == 'Windows'
-        run: cmake -S . -B jcef_build -G Ninja -DCMAKE_BUILD_TYPE=Release
+        run: cmake -S . -B jcef_build -G Ninja -DCMAKE_BUILD_TYPE=Release -DJCEF_DOWNLOAD_CLANG_FORMAT=OFF
 
       - name: Build native targets
         run: cmake --build jcef_build --config Release --parallel
