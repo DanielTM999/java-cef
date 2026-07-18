@@ -68,29 +68,7 @@ responsive in dedicated mode and freeze in legacy mode.
 
 | Workflow | Trigger | What it does |
 |---|---|---|
-| `.github/workflows/ci.yml` | push (master/main), PR, manual | Compiles Java, runs unit tests, builds & uploads the portable jar. `contents: read` only. |
-| `.github/workflows/package.yml` | manual (`workflow_dispatch`) | Builds + validates the portable distribution and uploads it as an artifact (no release). |
-| `.github/workflows/release.yml` | tag `v*`, manual | Builds the portable artifacts, verifies checksums, and publishes a GitHub Release with the jar, sources jar, POM and `SHA256SUMS.txt`. `contents: write` only in the release job. |
 | `.github/workflows/native-binaries.yml` | manual, tag `native-v*` | Builds the portable jar plus per-OS JCEF redistributables (`win64`, `linux64`, `macosx64`), publishes them to a GitHub Release, optionally commits them to `vendor/jcef`, then deletes temporary Actions artifacts. |
-
-### Cut a release
-
-The version is taken from the git tag (single source of truth):
-
-```sh
-git tag v146.0.0
-git push origin v146.0.0
-```
-
-The `v` prefix is stripped for artifact names (`jcef-orion-146.0.0.jar`).
-
-### Run a workflow manually
-
-Use the **Run workflow** button on the Actions tab (or the `gh` CLI):
-
-```sh
-gh workflow run package.yml -f version=146.0.0-rc1
-```
 
 ### Build native release assets
 
