@@ -27,11 +27,4 @@ goto end
 if "%1" == "" goto after_popd
 popd
 :after_popd
-endlocal & set RETURNCODE=%RETURNCODE%
-goto omega
-
-:returncode
-exit /B %RETURNCODE%
-
-:omega
-call :returncode %RETURNCODE%
+endlocal & exit /B %RETURNCODE%

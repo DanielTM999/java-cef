@@ -53,11 +53,4 @@ xcopy /sfy .\java\tests\detailed\handler\*.png %OUT_PATH%\tests\detailed\handler
 
 :end
 popd
-endlocal & set RETURNCODE=%RETURNCODE%
-goto omega
-
-:returncode
-exit /B %RETURNCODE%
-
-:omega
-call :returncode %RETURNCODE%
+endlocal & exit /B %RETURNCODE%

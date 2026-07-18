@@ -99,11 +99,4 @@ xcopy /sfy %TOOLS_DISTRIB_PATH%\* %DISTRIB_PATH% /exclude:.\tools\distrib\EXCLUD
 
 :end
 popd
-endlocal & set RETURNCODE=%RETURNCODE%
-goto omega
-
-:returncode
-exit /B %RETURNCODE%
-
-:omega
-call :returncode %RETURNCODE%
+endlocal & exit /B %RETURNCODE%
