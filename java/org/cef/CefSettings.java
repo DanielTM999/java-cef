@@ -11,6 +11,34 @@ package org.cef;
  */
 public class CefSettings {
     /**
+     * Selects which thread owns the global CEF context lifecycle
+     * ({@code CefInitialize}, {@code CefShutdown} and, when applicable,
+     * {@code CefDoMessageLoopWork}).
+     *
+     * <p>This is an Orion fork addition. See {@code MODIFICATIONS.md}.
+     */
+    public enum CefInitializationMode {
+        /**
+         * Upstream JCEF behavior: the AWT Event Dispatch Thread (EDT) is the
+         * logical CEF owner thread. Native initialization runs on the EDT and
+         * can freeze the UI while {@code CefInitialize} is in progress. This is
+         * the default and is the only supported mode on macOS.
+         */
+        LEGACY_EDT,
+
+        /**
+         * Orion fork behavior (Windows/Linux only): a dedicated, permanent
+         * thread named {@code Orion-JCEF-Main} owns the whole global CEF
+         * context lifecycle, keeping the EDT responsive during native
+         * initialization. Requested via {@link CefApp#initializeAsync()}.
+         *
+         * <p>On macOS and unsupported platforms this automatically falls back
+         * to {@link #LEGACY_EDT} with an explanatory log line.
+         */
+        DEDICATED_CEF_THREAD
+    }
+
+    /**
      * Log severity levels.
      */
     public enum LogSeverity {
@@ -265,6 +293,18 @@ public class CefSettings {
     public String cookieable_schemes_list = null;
     public boolean cookieable_schemes_exclude_defaults = false;
 
+    /**
+     * Selects the thread that owns the global CEF context lifecycle. Defaults
+     * to {@link CefInitializationMode#LEGACY_EDT} for full upstream
+     * compatibility. Set to {@link CefInitializationMode#DEDICATED_CEF_THREAD}
+     * (Windows/Linux) to keep the EDT responsive during native initialization.
+     *
+     * <p>This value is read once, before pre-initialization, and cannot be
+     * changed after the context has been created. Orion fork addition; not
+     * mirrored to native CefSettings.
+     */
+    public CefInitializationMode initialization_mode = CefInitializationMode.LEGACY_EDT;
+
     public CefSettings() {}
 
     @Override
@@ -290,6 +330,7 @@ public class CefSettings {
         if (background_color != null) tmp.background_color = background_color.clone();
         tmp.cookieable_schemes_list = cookieable_schemes_list;
         tmp.cookieable_schemes_exclude_defaults = cookieable_schemes_exclude_defaults;
+        tmp.initialization_mode = initialization_mode;
         return tmp;
     }
 }

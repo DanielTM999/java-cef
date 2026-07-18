@@ -22,6 +22,31 @@ CEF supports a wide range of programming languages and operating systems and can
 
 This project provides a Java Wrapper for CEF (JCEF).
 
+# Orion fork
+
+This is the **Orion fork** of JCEF. It adds an opt-in initialization mode that
+runs the global CEF context lifecycle on a dedicated `Orion-JCEF-Main` thread so
+native Chromium initialization no longer freezes the Swing EDT (Windows/Linux;
+macOS keeps the legacy behavior). The default is unchanged, so upstream users are
+unaffected.
+
+* What changed and why: [`MODIFICATIONS.md`](MODIFICATIONS.md)
+* Build, package, workflows and Orion integration: [`docs/BUILDING.md`](docs/BUILDING.md)
+
+Quick start:
+
+```sh
+tools/compile.sh linux64
+scripts/package-portable.sh 146.0.0 dist   # portable jar + sources + POM + checksums
+```
+
+```java
+CefSettings settings = new CefSettings();
+settings.initialization_mode = CefSettings.CefInitializationMode.DEDICATED_CEF_THREAD;
+CefApp app = CefApp.getInstance(args, settings);
+app.initializeAsync().whenComplete((cefApp, err) -> { /* create client on success */ });
+```
+
 # Building JCEF
 
 The JCEF project is an extension of the Chromium Embedded Framework (CEF) project hosted at https://github.com/chromiumembedded/cef. JCEF maintains a development branch that tracks the most recent CEF3 release branch. JCEF source code can be downloaded, built and packaged into a binary distribution. Once you have created the binary distribution for your platform you can distribute it as a stand-alone package without further dependencies on the JCEF, CEF or Chromium source code. Visit the [Branches and Building](https://chromiumembedded.github.io/java-cef/branches_and_building) page for detailed instructions.

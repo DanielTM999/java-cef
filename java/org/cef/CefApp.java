@@ -8,6 +8,8 @@ import org.cef.callback.CefSchemeHandlerFactory;
 import org.cef.handler.CefAppHandler;
 import org.cef.handler.CefAppHandlerAdapter;
 
+import org.cef.CefSettings.CefInitializationMode;
+
 import java.awt.event.ActionEvent;
 import java.awt.event.ActionListener;
 import java.io.File;
@@ -15,6 +17,7 @@ import java.io.FilenameFilter;
 import java.nio.file.Path;
 import java.nio.file.Paths;
 import java.util.HashSet;
+import java.util.concurrent.CompletableFuture;
 
 import javax.swing.SwingUtilities;
 import javax.swing.Timer;
@@ -134,6 +137,21 @@ public class CefApp extends CefAppHandlerAdapter {
     private HashSet<CefClient> clients_ = new HashSet<CefClient>();
     private CefSettings settings_ = null;
 
+    // --- Orion fork: dedicated CEF owner thread support ---------------------
+    // Resolved once at construction and never changed afterwards.
+    private final CefInitializationMode initMode_;
+    // Non-null only in DEDICATED_CEF_THREAD mode; owns the whole global CEF
+    // context lifecycle (pre-init, init, message loop work, shutdown).
+    private final CefMainThread cefMainThread_;
+    // Idempotent async initialization: concurrent callers share this future.
+    private CompletableFuture<CefApp> initFuture_ = null;
+    // Guards the one-shot native pre-initialization in dedicated mode.
+    private boolean preInitialized_ = false;
+    // Caches the one-shot native N_Initialize result so it never runs twice,
+    // even if the legacy createClient() path and initializeAsync() are mixed.
+    private final Object nativeInitLock_ = new Object();
+    private Boolean nativeInitResult_ = null;
+
     /**
      * To get an instance of this class, use the method
      * getInstance() instead of this CTOR.
@@ -146,6 +164,17 @@ public class CefApp extends CefAppHandlerAdapter {
     private CefApp(String[] args, CefSettings settings) throws UnsatisfiedLinkError {
         super(args);
         if (settings != null) settings_ = settings.clone();
+
+        // Orion fork: decide the CEF owner-thread mode exactly once, before any
+        // native pre-initialization. macOS/unsupported platforms fall back to
+        // LEGACY_EDT with an explanatory log line.
+        initMode_ = resolveInitializationMode(settings_);
+        cefMainThread_ =
+                (initMode_ == CefInitializationMode.DEDICATED_CEF_THREAD) ? new CefMainThread()
+                                                                          : null;
+        logInit("Initialization mode: " + initMode_ + " (os=" + System.getProperty("os.name")
+                + ", arch=" + System.getProperty("os.arch") + ")");
+
         if (OS.isWindows()) {
             SystemBootstrap.loadLibrary("jawt");
             SystemBootstrap.loadLibrary("chrome_elf");
@@ -160,7 +189,13 @@ public class CefApp extends CefAppHandlerAdapter {
             appHandler_ = this;
         }
 
-        // Execute on the AWT event dispatching thread.
+        // In DEDICATED_CEF_THREAD mode native pre-initialization is deferred to
+        // the owner thread and driven by initializeAsync(), so the constructor
+        // (which may run on the EDT) stays cheap and non-blocking.
+        if (initMode_ == CefInitializationMode.DEDICATED_CEF_THREAD) return;
+
+        // LEGACY_EDT: unchanged upstream behavior. Execute on the AWT event
+        // dispatching thread.
         try {
             Runnable r = new Runnable() {
                 @Override
@@ -174,9 +209,41 @@ public class CefApp extends CefAppHandlerAdapter {
                 r.run();
             else
                 SwingUtilities.invokeAndWait(r);
+            preInitialized_ = true;
         } catch (Exception e) {
             e.printStackTrace();
         }
+    }
+
+    /**
+     * Centralized, platform-aware resolution of the CEF initialization mode.
+     * The requested mode is honored on Windows and Linux; every other platform
+     * (macOS in particular, which requires the process main thread and a Cocoa
+     * loop) is forced back to {@link CefInitializationMode#LEGACY_EDT}.
+     */
+    public static CefInitializationMode resolveInitializationMode(CefSettings settings) {
+        CefInitializationMode requested =
+                (settings != null && settings.initialization_mode != null)
+                ? settings.initialization_mode
+                : CefInitializationMode.LEGACY_EDT;
+
+        if (requested == CefInitializationMode.DEDICATED_CEF_THREAD
+                && !(OS.isWindows() || OS.isLinux())) {
+            System.out.println("[JCEF] DEDICATED_CEF_THREAD is not supported on this platform ("
+                    + System.getProperty("os.name") + ").");
+            System.out.println("[JCEF] Falling back to LEGACY_EDT.");
+            return CefInitializationMode.LEGACY_EDT;
+        }
+        return requested;
+    }
+
+    /** @return the resolved CEF initialization mode for this CefApp instance. */
+    public final CefInitializationMode getInitializationMode() {
+        return initMode_;
+    }
+
+    private static void logInit(String message) {
+        System.out.println("[JCEF] " + message);
     }
 
     /**
@@ -280,6 +347,17 @@ public class CefApp extends CefAppHandlerAdapter {
             case NEW:
                 // Nothing to do inspite of invalidating the state
                 setState(CefAppState.TERMINATED);
+                // Orion fork: never pre-initialized natively, but a dedicated
+                // owner thread may already be running; terminate it cleanly.
+                terminateOwnerThread();
+                break;
+
+            case INITIALIZATION_FAILED:
+                // Orion fork: a failed dedicated initialization still leaves the
+                // owner thread alive. Do not touch native CEF; just terminate.
+                setState(CefAppState.TERMINATED);
+                terminateOwnerThread();
+                CefApp.self = null;
                 break;
 
             case INITIALIZING:
@@ -315,6 +393,20 @@ public class CefApp extends CefAppHandlerAdapter {
      * @return a new client instance
      */
     public synchronized CefClient createClient() {
+        // Orion fork: in DEDICATED_CEF_THREAD mode createClient() must never
+        // silently trigger heavy native initialization. Callers initialize
+        // explicitly via initializeAsync()/createClientAsync() first.
+        if (initMode_ == CefInitializationMode.DEDICATED_CEF_THREAD) {
+            if (getState() != CefAppState.INITIALIZED) {
+                throw new IllegalStateException(
+                        "createClient() requires the CefApp to be INITIALIZED in "
+                        + "DEDICATED_CEF_THREAD mode; call initializeAsync() or "
+                        + "createClientAsync() first (current state=" + getState() + ")");
+            }
+            return newClient();
+        }
+
+        // LEGACY_EDT: unchanged upstream behavior (lazy init on the EDT).
         switch (getState()) {
             case NEW:
                 setState(CefAppState.INITIALIZING);
@@ -323,12 +415,142 @@ public class CefApp extends CefAppHandlerAdapter {
 
             case INITIALIZING:
             case INITIALIZED:
-                CefClient client = new CefClient();
-                clients_.add(client);
-                return client;
+                return newClient();
 
             default:
                 throw new IllegalStateException("Can't crate client in state " + state_);
+        }
+    }
+
+    private synchronized CefClient newClient() {
+        CefClient client = new CefClient();
+        clients_.add(client);
+        return client;
+    }
+
+    /**
+     * Start (or reuse) an asynchronous global CEF initialization.
+     *
+     * <p>Idempotent and thread-safe: concurrent calls return the exact same
+     * {@link CompletableFuture}, and native pre-initialization / initialization
+     * each run at most once. In {@link CefInitializationMode#DEDICATED_CEF_THREAD}
+     * mode all native work runs on the {@code Orion-JCEF-Main} thread, so the
+     * EDT stays responsive. In {@link CefInitializationMode#LEGACY_EDT} mode the
+     * native work runs on the EDT as upstream does, but the caller still gets a
+     * future instead of blocking.
+     *
+     * <p>Never call {@code join()}/{@code get()} on the returned future from the
+     * EDT.
+     *
+     * @return a future completed with this CefApp once INITIALIZED, or completed
+     *         exceptionally with a {@link CefInitializationException} on failure.
+     */
+    public synchronized CompletableFuture<CefApp> initializeAsync() {
+        if (initFuture_ != null) return initFuture_;
+
+        CefAppState s = getState();
+        if (s == CefAppState.INITIALIZED) {
+            initFuture_ = CompletableFuture.completedFuture(this);
+            return initFuture_;
+        }
+        if (s == CefAppState.INITIALIZATION_FAILED || s.compareTo(CefAppState.SHUTTING_DOWN) >= 0) {
+            CompletableFuture<CefApp> failed = new CompletableFuture<>();
+            failed.completeExceptionally(new CefInitializationException(
+                    "Cannot initialize CefApp in state " + s));
+            initFuture_ = failed;
+            return initFuture_;
+        }
+
+        final CompletableFuture<CefApp> future = new CompletableFuture<>();
+        initFuture_ = future;
+        if (s == CefAppState.NEW) setState(CefAppState.INITIALIZING);
+
+        Runnable initTask = () -> runFullInitialization(future);
+        dispatchToOwner(initTask);
+        return future;
+    }
+
+    /**
+     * Create a client once the CefApp is (or becomes) INITIALIZED, without ever
+     * blocking the calling thread. Triggers {@link #initializeAsync()} if needed.
+     *
+     * @return a future completed with a new {@link CefClient}.
+     */
+    public CompletableFuture<CefClient> createClientAsync() {
+        return initializeAsync().thenApply(app -> newClient());
+    }
+
+    /**
+     * Runs the full native initialization (pre-init + init) on the current
+     * owner thread and settles {@code future}. Always invoked on the CEF owner
+     * thread: {@code Orion-JCEF-Main} (dedicated) or the EDT (legacy).
+     */
+    private void runFullInitialization(CompletableFuture<CefApp> future) {
+        try {
+            // Pre-initialization: in dedicated mode this is the first native
+            // call and must happen on the owner thread; in legacy mode it was
+            // already done in the constructor.
+            if (!preInitialized_) {
+                logInit("N_PreInitialize started on thread " + Thread.currentThread().getName());
+                long t0 = System.nanoTime();
+                if (!N_PreInitialize()) {
+                    setState(CefAppState.INITIALIZATION_FAILED);
+                    future.completeExceptionally(CefInitializationException.forOperation(
+                            "N_PreInitialize", initMode_, getState()));
+                    return;
+                }
+                preInitialized_ = true;
+                logInit("N_PreInitialize completed in " + msSince(t0) + " ms");
+            }
+
+            logInit("N_Initialize started on thread " + Thread.currentThread().getName());
+            long t1 = System.nanoTime();
+            boolean ok = doNativeInitialize();
+            if (ok) {
+                logInit("N_Initialize completed in " + msSince(t1) + " ms");
+                logInit("State changed: INITIALIZING -> INITIALIZED");
+                setState(CefAppState.INITIALIZED);
+                future.complete(this);
+            } else {
+                setState(CefAppState.INITIALIZATION_FAILED);
+                future.completeExceptionally(CefInitializationException.forOperation(
+                        "N_Initialize", initMode_, getState()));
+            }
+        } catch (Throwable t) {
+            setState(CefAppState.INITIALIZATION_FAILED);
+            future.completeExceptionally(new CefInitializationException(
+                    "JCEF native initialization failed on " + Thread.currentThread().getName(), t));
+        }
+    }
+
+    private static long msSince(long startNanos) {
+        return (System.nanoTime() - startNanos) / 1_000_000L;
+    }
+
+    /**
+     * Dispatch a global-context task to the CEF owner thread. In dedicated mode
+     * that is {@code Orion-JCEF-Main}; in legacy mode it is the EDT (async, so
+     * as not to block the caller).
+     */
+    private void dispatchToOwner(Runnable task) {
+        if (initMode_ == CefInitializationMode.DEDICATED_CEF_THREAD) {
+            cefMainThread_.execute(task);
+        } else {
+            SwingUtilities.invokeLater(task);
+        }
+    }
+
+    /**
+     * Perform one native message-loop iteration on the CEF owner thread. Only
+     * used with an external message pump (windowless/OSR). In dedicated mode the
+     * Swing Timer still schedules on the EDT, but the native call itself is
+     * routed to {@code Orion-JCEF-Main} to keep thread ownership consistent.
+     */
+    private void invokeDoMessageLoopWork() {
+        if (initMode_ == CefInitializationMode.DEDICATED_CEF_THREAD) {
+            if (cefMainThread_ != null) cefMainThread_.execute(this::N_DoMessageLoopWork);
+        } else {
+            N_DoMessageLoopWork();
         }
     }
 
@@ -387,50 +609,13 @@ public class CefApp extends CefAppHandlerAdapter {
      * @return true on success.
      */
     private final void initialize() {
-        // Execute on the AWT event dispatching thread.
+        // LEGACY_EDT path (invoked from createClient). Execute on the AWT event
+        // dispatching thread, preserving upstream semantics.
         try {
             Runnable r = new Runnable() {
                 @Override
                 public void run() {
-                    String library_path = getJcefLibPath();
-                    System.out.println("initialize on " + Thread.currentThread()
-                            + " with library path " + library_path);
-
-                    CefSettings settings = settings_ != null ? settings_ : new CefSettings();
-
-                    // Avoid to override user values by testing on NULL
-                    if (OS.isMacintosh()) {
-                        if (settings.browser_subprocess_path == null) {
-                            Path path = Paths.get(library_path,
-                                    "../Frameworks/jcef Helper.app/Contents/MacOS/jcef Helper");
-                            settings.browser_subprocess_path =
-                                    path.normalize().toAbsolutePath().toString();
-                        }
-                    } else if (OS.isWindows()) {
-                        if (settings.browser_subprocess_path == null) {
-                            Path path = Paths.get(library_path, "jcef_helper.exe");
-                            settings.browser_subprocess_path =
-                                    path.normalize().toAbsolutePath().toString();
-                        }
-                    } else if (OS.isLinux()) {
-                        if (settings.browser_subprocess_path == null) {
-                            Path path = Paths.get(library_path, "jcef_helper");
-                            settings.browser_subprocess_path =
-                                    path.normalize().toAbsolutePath().toString();
-                        }
-                        if (settings.resources_dir_path == null) {
-                            Path path = Paths.get(library_path);
-                            settings.resources_dir_path =
-                                    path.normalize().toAbsolutePath().toString();
-                        }
-                        if (settings.locales_dir_path == null) {
-                            Path path = Paths.get(library_path, "locales");
-                            settings.locales_dir_path =
-                                    path.normalize().toAbsolutePath().toString();
-                        }
-                    }
-
-                    if (N_Initialize(appHandler_, settings)) {
+                    if (doNativeInitialize()) {
                         setState(CefAppState.INITIALIZED);
                     } else {
                         setState(CefAppState.INITIALIZATION_FAILED);
@@ -444,6 +629,63 @@ public class CefApp extends CefAppHandlerAdapter {
         } catch (Exception e) {
             e.printStackTrace();
         }
+    }
+
+    /**
+     * Build the effective {@link CefSettings} (filling in platform-specific
+     * paths) and perform native {@code N_Initialize}. Runs on the current CEF
+     * owner thread; does not change the CefApp state (the caller does).
+     *
+     * @return the native initialization result.
+     */
+    private boolean doNativeInitialize() {
+        // One-shot: never call native N_Initialize twice. Legacy runs on the
+        // EDT and dedicated on Orion-JCEF-Main, both single-threaded, so this
+        // lock is effectively uncontended.
+        synchronized (nativeInitLock_) {
+            if (nativeInitResult_ != null) return nativeInitResult_;
+
+            boolean result = doNativeInitializeLocked();
+            nativeInitResult_ = result;
+            return result;
+        }
+    }
+
+    private boolean doNativeInitializeLocked() {
+        String library_path = getJcefLibPath();
+        System.out.println("initialize on " + Thread.currentThread() + " with library path "
+                + library_path);
+
+        CefSettings settings = settings_ != null ? settings_ : new CefSettings();
+
+        // Avoid to override user values by testing on NULL
+        if (OS.isMacintosh()) {
+            if (settings.browser_subprocess_path == null) {
+                Path path = Paths.get(library_path,
+                        "../Frameworks/jcef Helper.app/Contents/MacOS/jcef Helper");
+                settings.browser_subprocess_path = path.normalize().toAbsolutePath().toString();
+            }
+        } else if (OS.isWindows()) {
+            if (settings.browser_subprocess_path == null) {
+                Path path = Paths.get(library_path, "jcef_helper.exe");
+                settings.browser_subprocess_path = path.normalize().toAbsolutePath().toString();
+            }
+        } else if (OS.isLinux()) {
+            if (settings.browser_subprocess_path == null) {
+                Path path = Paths.get(library_path, "jcef_helper");
+                settings.browser_subprocess_path = path.normalize().toAbsolutePath().toString();
+            }
+            if (settings.resources_dir_path == null) {
+                Path path = Paths.get(library_path);
+                settings.resources_dir_path = path.normalize().toAbsolutePath().toString();
+            }
+            if (settings.locales_dir_path == null) {
+                Path path = Paths.get(library_path, "locales");
+                settings.locales_dir_path = path.normalize().toAbsolutePath().toString();
+            }
+        }
+
+        return N_Initialize(appHandler_, settings);
     }
 
     /**
@@ -468,20 +710,45 @@ public class CefApp extends CefAppHandlerAdapter {
      * Shut down the context.
      */
     private final void shutdown() {
-        // Execute on the AWT event dispatching thread. Always call asynchronously
-        // so the call stack has a chance to unwind.
-        SwingUtilities.invokeLater(new Runnable() {
+        // The shutdown must run on the same owner thread used for initialization.
+        // Always call asynchronously so the call stack has a chance to unwind.
+        Runnable r = new Runnable() {
             @Override
             public void run() {
                 System.out.println("shutdown on " + Thread.currentThread());
+                logInit("N_Shutdown started on thread " + Thread.currentThread().getName());
+                long t0 = System.nanoTime();
 
                 // Shutdown native CEF.
                 N_Shutdown();
 
+                logInit("N_Shutdown completed in " + msSince(t0) + " ms");
                 setState(CefAppState.TERMINATED);
                 CefApp.self = null;
             }
-        });
+        };
+
+        if (initMode_ == CefInitializationMode.DEDICATED_CEF_THREAD) {
+            // Run N_Shutdown on Orion-JCEF-Main, then request that thread to
+            // drain and terminate. The request is enqueued from within the
+            // worker's own completion callback, so it must be non-blocking to
+            // avoid the worker waiting on itself.
+            cefMainThread_.execute(r).whenComplete((v, t) -> terminateOwnerThread());
+        } else {
+            SwingUtilities.invokeLater(r);
+        }
+    }
+
+    /**
+     * Request an orderly termination of the dedicated owner thread. Non-blocking
+     * and safe to call from any thread (including the owner thread itself and
+     * the EDT): it only enqueues a stop signal; the thread drains its queue and
+     * terminates on its own. The thread is non-daemon, so a pending termination
+     * still completes even during JVM shutdown.
+     */
+    private void terminateOwnerThread() {
+        if (cefMainThread_ == null) return;
+        cefMainThread_.shutdownAsync();
     }
 
     /**
@@ -505,8 +772,8 @@ public class CefApp extends CefAppHandlerAdapter {
                 }
 
                 if (delay_ms <= 0) {
-                    // Execute the work immediately.
-                    N_DoMessageLoopWork();
+                    // Execute the work immediately (on the CEF owner thread).
+                    invokeDoMessageLoopWork();
 
                     // Schedule more work later.
                     doMessageLoopWork(kMaxTimerDelay);
@@ -522,7 +789,7 @@ public class CefApp extends CefAppHandlerAdapter {
                             workTimer_.stop();
                             workTimer_ = null;
 
-                            N_DoMessageLoopWork();
+                            invokeDoMessageLoopWork();
 
                             // Schedule more work later.
                             doMessageLoopWork(kMaxTimerDelay);

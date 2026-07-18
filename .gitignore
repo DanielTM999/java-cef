@@ -57,3 +57,6 @@ Thumbs.db
 # Misc working directories
 /tmp
 /tools/buildtools/win/clang-format.exe
+
+# Orion fork packaging output
+dist/
