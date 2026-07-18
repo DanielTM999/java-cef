@@ -71,6 +71,7 @@ responsive in dedicated mode and freeze in legacy mode.
 | `.github/workflows/ci.yml` | push (master/main), PR, manual | Compiles Java, runs unit tests, builds & uploads the portable jar. `contents: read` only. |
 | `.github/workflows/package.yml` | manual (`workflow_dispatch`) | Builds + validates the portable distribution and uploads it as an artifact (no release). |
 | `.github/workflows/release.yml` | tag `v*`, manual | Builds the portable artifacts, verifies checksums, and publishes a GitHub Release with the jar, sources jar, POM and `SHA256SUMS.txt`. `contents: write` only in the release job. |
+| `.github/workflows/native-binaries.yml` | manual, tag `native-v*` | Builds the portable jar plus per-OS JCEF redistributables (`win64`, `linux64`, `macosx64`), publishes them to a GitHub Release, optionally commits them to `vendor/jcef`, then deletes temporary Actions artifacts. |
 
 ### Cut a release
 
@@ -90,6 +91,28 @@ Use the **Run workflow** button on the Actions tab (or the `gh` CLI):
 ```sh
 gh workflow run package.yml -f version=146.0.0-rc1
 ```
+
+### Build native release assets
+
+The `Native Binaries` workflow mirrors the SwingTools-style native packaging
+flow: it builds the portable `jcef-orion-1.0.0.jar`, builds `win64`, `linux64`
+and `macosx64` in a matrix, uploads each output as a temporary artifact,
+publishes those files to a GitHub Release, optionally commits the generated
+files into `vendor/jcef`, then deletes the temporary Actions artifacts for that
+run.
+
+Run it manually from GitHub Actions with a release tag such as
+`native-v1.0.0`. The release will contain the portable jar, sources jar, POM,
+checksums and one native redistributable archive per platform.
+
+Keep `commit_binaries=true` when running manually if you want the workflow to
+push the generated files back to the selected branch. The committed files live
+under `vendor/jcef/java`, `vendor/jcef/win64`, `vendor/jcef/linux64` and
+`vendor/jcef/macosx64`, and are tracked with Git LFS because CEF binaries are
+too large for normal Git blobs.
+
+Tagging `native-v*` runs the release flow only; it does not commit generated
+binaries back to a branch.
 
 ### Verify a downloaded release
 
