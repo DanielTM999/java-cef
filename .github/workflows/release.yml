@@ -2,16 +2,18 @@
 # reserved. Use of this source code is governed by a BSD-style license that
 # can be found in the LICENSE file.
 #
-# Orion fork release: on a v* tag, build the portable (OS-independent) jcef.jar
+# Orion fork release: on a tag, build the portable (OS-independent) shared jar
 # plus a sources jar, a consumable POM, and SHA-256 checksums, then publish a
-# GitHub Release. The heavy CEF runtime is intentionally NOT bundled here; it is
-# downloaded per-OS at runtime (jcefmaven-style), so the same jar runs on any OS.
+# GitHub Release named exactly like the tag. The heavy CEF runtime is
+# intentionally NOT bundled here; it is downloaded per-OS at runtime
+# (jcefmaven-style), so the same jar runs on any OS.
 
 name: Release
 
 on:
   push:
-    tags: ['v*']
+    tags:
+      - '*'
   workflow_dispatch:
     inputs:
       version:
@@ -27,6 +29,7 @@ jobs:
     name: Build portable artifacts
     runs-on: ubuntu-latest
     outputs:
+      artifact_id: ${{ steps.upload.outputs['artifact-id'] }}
       version: ${{ steps.ver.outputs.version }}
     steps:
       - uses: actions/checkout@v4
@@ -41,8 +44,9 @@ jobs:
         id: ver
         run: |
           set -euo pipefail
-          if [[ "${GITHUB_REF}" == refs/tags/v* ]]; then
-            VERSION="${GITHUB_REF#refs/tags/v}"
+          if [[ "${GITHUB_REF}" == refs/tags/* ]]; then
+            TAG="${GITHUB_REF#refs/tags/}"
+            VERSION="${TAG#v}"
           elif [[ -n "${{ github.event.inputs.version }}" ]]; then
             VERSION="${{ github.event.inputs.version }}"
           else
@@ -72,19 +76,21 @@ jobs:
           scripts/package-portable.sh "${VERSION}" dist
 
       - name: Upload build artifacts
+        id: upload
         uses: actions/upload-artifact@v4
         with:
           name: portable-${{ steps.ver.outputs.version }}
           path: dist/
           if-no-files-found: error
-          retention-days: 30
+          retention-days: 1
 
   release:
     name: Publish GitHub Release
     needs: build
-    if: startsWith(github.ref, 'refs/tags/v')
+    if: startsWith(github.ref, 'refs/tags/')
     runs-on: ubuntu-latest
     permissions:
+      actions: write
       contents: write
     steps:
       - uses: actions/checkout@v4
@@ -106,7 +112,7 @@ jobs:
         uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ github.ref_name }}
-          name: JCEF Orion ${{ needs.build.outputs.version }}
+          name: ${{ github.ref_name }}
           generate_release_notes: true
           fail_on_unmatched_files: true
           files: |
@@ -114,3 +120,12 @@ jobs:
             dist/jcef-orion-${{ needs.build.outputs.version }}-sources.jar
             dist/jcef-orion-${{ needs.build.outputs.version }}.pom
             dist/SHA256SUMS.txt
+
+      - name: Delete temporary Actions artifact
+        env:
+          GH_TOKEN: ${{ github.token }}
+          ARTIFACT_ID: ${{ needs.build.outputs.artifact_id }}
+          REPOSITORY: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          gh api --method DELETE "repos/${REPOSITORY}/actions/artifacts/${ARTIFACT_ID}"
