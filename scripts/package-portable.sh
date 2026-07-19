@@ -11,9 +11,10 @@
 #   - jcef-orion-<version>.pom          (a consumable Maven POM)
 #   - SHA256SUMS.txt                    (checksums of the above)
 #
-# This script does not bundle native runtimes. Use package-universal.sh after
-# producing binary_distrib/<platform> outputs to embed win64, linux64 and
-# macosx64 runtimes in the same jar.
+# This script does not bundle native runtimes. Release builds publish matching
+# jcef-runtime-<platform>-<version>.zip assets that this jar can download at
+# runtime. Use package-universal.sh after producing binary_distrib/<platform>
+# outputs to build the optional offline embedded jar.
 #
 #   tools/compile.sh linux64
 #   scripts/package-portable.sh 146.0.0 dist
@@ -96,14 +97,21 @@ cat > "${OUT_DIR}/${POM_NAME}" <<EOF
   <name>JCEF (Orion fork)</name>
   <description>Java Chromium Embedded Framework, Orion fork with a dedicated CEF
     initialization thread (DEDICATED_CEF_THREAD) so native init never blocks the
-    Swing EDT. The jar embeds JOGL/GlueGen classes and Release jars can embed
-    native runtimes for win64, linux64 and macosx64.</description>
+    Swing EDT. This lightweight jar embeds JOGL/GlueGen classes and downloads
+    the current OS native runtime from jcef-runtime-&lt;platform&gt;-&lt;version&gt;.zip
+    Release assets when needed. Use the -embedded jar asset for offline
+    deployments without runtime downloads.</description>
+  <url>https://github.com/DanielTM999/java-cef</url>
   <licenses>
     <license>
       <name>BSD-3-Clause</name>
       <distribution>repo</distribution>
     </license>
   </licenses>
+  <scm>
+    <url>https://github.com/DanielTM999/java-cef</url>
+    <connection>scm:git:https://github.com/DanielTM999/java-cef.git</connection>
+  </scm>
 </project>
 EOF
 

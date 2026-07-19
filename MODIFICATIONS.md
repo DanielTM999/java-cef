@@ -52,6 +52,10 @@ CefSettings.CefInitializationMode.DEDICATED_CEF_THREAD   (Orion; Windows/Linux o
   `INITIALIZED` and throws a clear `IllegalStateException` otherwise. In
   `LEGACY_EDT` mode it is unchanged.
 - `CefInitializationMode CefApp.getInitializationMode()`.
+- `SystemBootstrap.setRuntimeDownloadProvider(...)` - overrides where the
+  lightweight jar downloads native runtime zips from.
+- `SystemBootstrap.setDownloadProgressListener(...)` - reports native runtime
+  download progress by platform, URL, byte counts and percentage.
 
 ### Supported platforms for `DEDICATED_CEF_THREAD`
 
@@ -83,9 +87,9 @@ CefSettings.CefInitializationMode.DEDICATED_CEF_THREAD   (Orion; Windows/Linux o
 | `MODIFICATIONS.md` | This file. |
 | `docs/BUILDING.md` | Build/packaging/workflow guide and Orion integration notes. |
 | `scripts/package-portable.sh` | Build the Java API jar with shaded JOGL/GlueGen dependencies, sources jar, POM and `SHA256SUMS.txt`. |
-| `scripts/package-universal.sh` | Embed `win64`, `linux64` and `macosx64` redistributables into `jcef-orion-<version>.jar`. |
+| `scripts/package-universal.sh` | Embed `win64`, `linux64` and `macosx64` redistributables into the optional offline jar. |
 | `scripts/validate-package.sh` | Validate a produced distribution. |
-| `.github/workflows/native-binaries.yml` | Build native redistributables per OS, assemble the shared jar, publish a Release and delete temporary Actions artifacts. |
+| `.github/workflows/native-binaries.yml` | Build native redistributables per OS, publish the lightweight jar, runtime zips, optional embedded jar, and delete temporary Actions artifacts. |
 
 ## Modified files
 
@@ -93,7 +97,7 @@ CefSettings.CefInitializationMode.DEDICATED_CEF_THREAD   (Orion; Windows/Linux o
 |---|---|
 | `java/org/cef/CefSettings.java` | Added `CefInitializationMode` enum + `initialization_mode` field. |
 | `java/org/cef/CefApp.java` | Mode resolution; dedicated owner-thread dispatch for pre-init / init / message-loop / shutdown; `initializeAsync()` / `createClientAsync()`; one-shot native-init guard; bundled-native library path lookup; logging. Legacy EDT path preserved. |
-| `java/org/cef/SystemBootstrap.java` | Default loader can extract embedded per-OS native runtime resources from the shared jar and load native libraries from the extracted cache. |
+| `java/org/cef/SystemBootstrap.java` | Default loader can extract embedded per-OS native runtime resources, download missing runtime zips from a configurable provider, report download progress, and load native libraries from the extracted cache. |
 | `tools/compile.sh`, `tools/compile.bat` | Also compile the new `tests/orion` package; Windows compilation now uses an argument file so `javac` receives expanded source paths reliably. |
 | `tools/make_jar.bat` | Packages class directories with `jar -C` instead of relying on Windows wildcard expansion. |
 | `CMakeLists.txt` | Added `JCEF_DOWNLOAD_CLANG_FORMAT=OFF` option so CI can avoid the Chromium `gsutil` / Python `six.moves` failure while configuring native builds. |
@@ -107,15 +111,17 @@ CefSettings.CefInitializationMode.DEDICATED_CEF_THREAD   (Orion; Windows/Linux o
 
 ## Distribution model
 
-The fork Release is distributed as a shared `jcef-orion-<version>.jar` containing
-the Java API, shaded JOGL/GlueGen dependencies, and embedded native runtimes for
-`win64`, `linux64` and `macosx64`. At runtime the default loader extracts only
-the current OS runtime to `~/.jcef-orion/<version>/<platform>` and loads it from
-there.
+The fork Release publishes a lightweight `jcef-orion-<version>.jar` containing
+the Java API and shaded JOGL/GlueGen dependencies. At runtime the default loader
+downloads only the current OS asset named
+`jcef-runtime-<platform>-<version>.zip`, extracts it to
+`~/.jcef-orion/<version>/<platform>`, and loads it from there.
 
-Native binaries are Release assets, not committed to git. The workflow also
-publishes `jcef-distrib-<platform>.tar.gz` for manual inspection or external
-packaging.
+For offline deployments the Release also publishes
+`jcef-orion-<version>-embedded.jar`, which contains the native runtimes for
+`win64`, `linux64` and `macosx64` and does not need a download.
+
+Native binaries are Release assets, not committed to git.
 
 See `docs/BUILDING.md` for build, packaging, workflow and Orion integration
 details.

@@ -8,11 +8,12 @@ on:
         required: true
         default: '1.0.0'
       release_tag:
-        description: 'Release tag to create/update, for example native-v1.0.0.'
+        description: 'Release tag to create/update, for example v1.0.0.'
         required: true
-        default: 'native-v1.0.0'
+        default: 'v1.0.0'
   push:
     tags:
+      - 'v*'
       - 'native-v*'
 
 permissions:
@@ -74,6 +75,7 @@ jobs:
 
   build-native:
     name: Build native ${{ matrix.platform }}
+    needs: build-java
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
@@ -176,17 +178,33 @@ jobs:
 
       - name: Archive redistributable
         shell: bash
+        env:
+          VERSION: ${{ needs.build-java.outputs.version }}
         run: |
           set -euo pipefail
           mkdir -p dist-archives
-          tar -czf "dist-archives/jcef-distrib-${{ matrix.platform }}.tar.gz" "binary_distrib/${{ matrix.platform }}"
+          rm -rf runtime-zip-root
+          mkdir -p runtime-zip-root
+
+          if [[ "${{ matrix.platform }}" == "macosx64" ]]; then
+            cp -aL "binary_distrib/${{ matrix.platform }}/bin/jcef_app.app" \
+                   "runtime-zip-root/jcef_app.app"
+          else
+            cp -aL "binary_distrib/${{ matrix.platform }}/bin/lib/${{ matrix.platform }}/." \
+                   "runtime-zip-root/"
+          fi
+
+          (
+            cd runtime-zip-root
+            cmake -E tar cf "../dist-archives/jcef-runtime-${{ matrix.platform }}-${VERSION}.zip" --format=zip .
+          )
           ls -lh dist-archives
 
       - name: Upload redistributable
         uses: actions/upload-artifact@v4
         with:
-          name: jcef-distrib-${{ matrix.platform }}
-          path: dist-archives/jcef-distrib-${{ matrix.platform }}.tar.gz
+          name: jcef-runtime-${{ matrix.platform }}
+          path: dist-archives/jcef-runtime-${{ matrix.platform }}-${{ needs.build-java.outputs.version }}.zip
           if-no-files-found: error
           retention-days: 1
 
@@ -218,8 +236,24 @@ jobs:
           cp universal-input/jcef-orion-java-api/jcef-orion-${{ needs.build-java.outputs.version }}-sources.jar dist/
           cp universal-input/jcef-orion-java-api/jcef-orion-${{ needs.build-java.outputs.version }}.pom dist/
 
-          for archive in universal-input/jcef-distrib-*/*.tar.gz; do
-            tar -xzf "$archive"
+          for archive in universal-input/jcef-runtime-*/*.zip; do
+            name="$(basename "$archive")"
+            platform="${name#jcef-runtime-}"
+            platform="${platform%-${{ needs.build-java.outputs.version }}.zip}"
+
+            if [[ "${platform}" == "macosx64" ]]; then
+              mkdir -p "binary_distrib/${platform}/bin"
+              (
+                cd "binary_distrib/${platform}/bin"
+                cmake -E tar xf "${GITHUB_WORKSPACE}/${archive}"
+              )
+            else
+              mkdir -p "binary_distrib/${platform}/bin/lib/${platform}"
+              (
+                cd "binary_distrib/${platform}/bin/lib/${platform}"
+                cmake -E tar xf "${GITHUB_WORKSPACE}/${archive}"
+              )
+            fi
           done
 
       - name: Assemble universal jar
@@ -229,13 +263,16 @@ jobs:
           set -euo pipefail
           chmod +x scripts/package-universal.sh
           scripts/package-universal.sh "${{ needs.build-java.outputs.version }}" dist binary_distrib
+          mv "dist/jcef-orion-${{ needs.build-java.outputs.version }}.jar" \
+             "dist/jcef-orion-${{ needs.build-java.outputs.version }}-embedded.jar"
+          rm -f dist/SHA256SUMS.txt
           ls -lh dist
 
       - name: Upload universal jar artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: jcef-orion-universal
-          path: dist/
+          name: jcef-orion-embedded
+          path: dist/jcef-orion-${{ needs.build-java.outputs.version }}-embedded.jar
           if-no-files-found: error
           retention-days: 1
 
@@ -255,6 +292,21 @@ jobs:
         with:
           path: release-assets
 
+      - name: Prepare release assets
+        run: |
+          set -euo pipefail
+          mkdir -p publish-assets
+          cp release-assets/jcef-orion-java-api/jcef-orion-${{ needs.build-java.outputs.version }}.jar publish-assets/
+          cp release-assets/jcef-orion-java-api/jcef-orion-${{ needs.build-java.outputs.version }}-sources.jar publish-assets/
+          cp release-assets/jcef-orion-java-api/jcef-orion-${{ needs.build-java.outputs.version }}.pom publish-assets/
+          cp release-assets/jcef-orion-embedded/jcef-orion-${{ needs.build-java.outputs.version }}-embedded.jar publish-assets/
+          cp release-assets/jcef-runtime-*/*.zip publish-assets/
+          (
+            cd publish-assets
+            sha256sum * > SHA256SUMS.txt
+            ls -lh
+          )
+
       - name: Publish GitHub Release
         uses: softprops/action-gh-release@v2
         with:
@@ -263,11 +315,7 @@ jobs:
           fail_on_unmatched_files: true
           overwrite_files: true
           files: |
-            release-assets/jcef-orion-universal/jcef-orion-${{ needs.build-java.outputs.version }}.jar
-            release-assets/jcef-orion-universal/jcef-orion-${{ needs.build-java.outputs.version }}-sources.jar
-            release-assets/jcef-orion-universal/jcef-orion-${{ needs.build-java.outputs.version }}.pom
-            release-assets/jcef-orion-universal/SHA256SUMS.txt
-            release-assets/jcef-distrib-*/*.tar.gz
+            publish-assets/*
 
   cleanup-actions-artifacts:
     name: Delete temporary Actions artifacts

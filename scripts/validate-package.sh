@@ -50,6 +50,10 @@ echo "==> Extracting to a clean directory and loading a fork class"
 WORK="$(mktemp -d)"
 trap 'rm -rf "${WORK}"' EXIT
 cp "${JAR}" "${WORK}/"
+CP_SEP=":"
+case "$(uname -s)" in
+  MINGW*|MSYS*|CYGWIN*) CP_SEP=";" ;;
+esac
 cat > "${WORK}/Check.java" <<'EOF'
 import org.cef.CefApp;
 public class Check {
@@ -60,6 +64,6 @@ public class Check {
     }
 }
 EOF
-( cd "${WORK}" && javac -cp "${JAR}" Check.java && java -cp ".:${JAR}" Check )
+( cd "${WORK}" && javac -cp "${JAR}" Check.java && java -cp ".${CP_SEP}${JAR}" Check )
 
 echo "All package validations passed for version ${VERSION}."

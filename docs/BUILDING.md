@@ -1,9 +1,9 @@
 # Building & Packaging The JCEF Orion Fork
 
-This document covers the Orion fork additions: the shared
-`jcef-orion-<version>.jar` with embedded native runtimes, CI packaging, and how
-the Orion IDE consumes it. For the full native JCEF build (CEF download, JNI,
-per-OS toolchains) see the upstream docs and the top-level `CLAUDE.md`.
+This document covers the Orion fork additions: the downloadable native runtime
+packaging, the optional `jcef-orion-<version>-embedded.jar`, CI packaging, and
+how the Orion IDE consumes it. For the full native JCEF build (CEF download,
+JNI, per-OS toolchains) see the upstream docs and the top-level `CLAUDE.md`.
 
 ## Packaging Model
 
@@ -13,13 +13,25 @@ runtimes beside that Java layer.
 
 | Artifact | Contains | Runtime behavior |
 |---|---|---|
-| `jcef-orion-<version>.jar` from Release | Java API + shaded JOGL/GlueGen dependencies + `win64`, `linux64`, `macosx64` JCEF/CEF runtimes | Extracts the current OS runtime to `~/.jcef-orion/<version>/<platform>` and loads it automatically. |
-| `jcef-distrib-<platform>.tar.gz` from Release | Standalone native redistributable for one platform | Useful for manual inspection or external packaging. |
-| local `scripts/package-portable.sh` jar | Java API + shaded JOGL/GlueGen dependencies | Requires native JCEF/CEF from `java.library.path`. |
+| `jcef-orion-<version>.jar` from Release | Java API + shaded JOGL/GlueGen dependencies | Downloads `jcef-runtime-<platform>-<version>.zip` from the same GitHub Release when no local/embedded runtime is available, extracts it to `~/.jcef-orion/<version>/<platform>`, and loads it automatically. |
+| `jcef-orion-<version>-embedded.jar` from Release | Java API + shaded JOGL/GlueGen dependencies + `win64`, `linux64`, `macosx64` JCEF/CEF runtimes | Extracts the current OS runtime to `~/.jcef-orion/<version>/<platform>` and loads it automatically without network access. |
+| `jcef-runtime-<platform>-<version>.zip` from Release | Standalone native runtime files for one platform | Used by the lightweight jar downloader and useful for manual inspection or external packaging. |
+| local `scripts/package-portable.sh` jar | Java API + shaded JOGL/GlueGen dependencies | Downloads the matching runtime zip from the configured provider, or uses native JCEF/CEF from `java.library.path` when already present. |
 
-The shared Release jar is intentionally large. It lets Orion use one dependency
-name across supported desktop OSes while the loader extracts only the runtime
-for the current OS.
+The normal Release jar stays small and downloads only the current OS runtime.
+The `-embedded` jar is intentionally large for offline/no-download deployments.
+
+The default downloader resolves assets from:
+
+```text
+https://github.com/DanielTM999/java-cef/releases/download/v<version>/jcef-runtime-<platform>-<version>.zip
+```
+
+Set `jcef.orion.release.tag`, `jcef.orion.runtime.base-url`, or
+`jcef.orion.runtime.url` to point at another Release or mirror. Applications can
+also install a Java provider with `SystemBootstrap.setRuntimeDownloadProvider`.
+Download progress is reported through
+`SystemBootstrap.setDownloadProgressListener`.
 
 ## Build Locally
 
@@ -56,28 +68,29 @@ jcef-orion-1.0.0.pom
 SHA256SUMS.txt
 ```
 
-To assemble a shared jar with embedded native runtimes locally, first create one
-or more native redistributables under `binary_distrib/<platform>`, then run:
+To assemble the offline jar with embedded native runtimes locally, first create
+one or more native redistributables under `binary_distrib/<platform>`, then run:
 
 ```sh
 scripts/package-universal.sh 1.0.0 dist binary_distrib
 ```
 
-Local packaging embeds only the platforms it finds. For example, if your machine
-only has `binary_distrib/win64`, the jar will contain only the Windows runtime.
-The GitHub Actions workflow sets `REQUIRED_PLATFORMS="win64 linux64 macosx64"`,
-so the Release jar fails to publish unless all three runtimes are present.
+Local embedded packaging embeds only the platforms it finds. For example, if
+your machine only has `binary_distrib/win64`, the jar will contain only the
+Windows runtime. The GitHub Actions workflow sets
+`REQUIRED_PLATFORMS="win64 linux64 macosx64"`, so the embedded Release jar fails
+to publish unless all three runtimes are present.
 
 ## GitHub Actions Workflow
 
 | Workflow | Trigger | What it does |
 |---|---|---|
-| `.github/workflows/native-binaries.yml` | manual, tag `native-v*` | Builds native redistributables for `win64`, `linux64` and `macosx64`, assembles `jcef-orion-<version>.jar` with those runtimes embedded, publishes a GitHub Release, then deletes temporary Actions artifacts. |
+| `.github/workflows/native-binaries.yml` | manual, tag `v*` or `native-v*` | Builds native redistributables for `win64`, `linux64` and `macosx64`, publishes the lightweight jar, runtime zips, the optional embedded jar, and then deletes temporary Actions artifacts. |
 
 Manual run example:
 
 ```sh
-gh workflow run native-binaries.yml -r master -f version=1.0.0 -f release_tag=native-v1.0.0
+gh workflow run native-binaries.yml -r master -f version=1.0.0 -f release_tag=v1.0.0
 ```
 
 ## Verify A Release
@@ -90,8 +103,21 @@ sha256sum -c SHA256SUMS.txt
 
 Put `jcef-orion-<version>.jar` ahead of jcefmaven's bundled `jcef.jar` on the
 classpath or module path so the fork's `org.cef.*` classes win. The default
-`SystemBootstrap` loader extracts and loads the embedded native runtime for the
-current OS automatically.
+`SystemBootstrap` loader downloads, extracts and loads the current OS runtime
+automatically. Use `jcef-orion-<version>-embedded.jar` when downloads are not
+allowed.
+
+Optional progress/provider configuration:
+
+```java
+SystemBootstrap.setDownloadProgressListener((platform, url, read, total, percent) -> {
+    System.out.printf("JCEF runtime %s: %.1f%%%n", platform, percent);
+});
+
+SystemBootstrap.setRuntimeDownloadProvider((version, platform) ->
+        new java.net.URL("https://mirror.example/jcef-runtime-"
+                + platform + "-" + version + ".zip"));
+```
 
 Select the dedicated mode on Windows/Linux before initializing:
 
