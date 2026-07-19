@@ -263,16 +263,13 @@ jobs:
           set -euo pipefail
           chmod +x scripts/package-universal.sh
           scripts/package-universal.sh "${{ needs.build-java.outputs.version }}" dist binary_distrib
-          mv "dist/jcef-orion-${{ needs.build-java.outputs.version }}.jar" \
-             "dist/jcef-orion-${{ needs.build-java.outputs.version }}-embedded.jar"
-          rm -f dist/SHA256SUMS.txt
           ls -lh dist
 
       - name: Upload universal jar artifacts
         uses: actions/upload-artifact@v4
         with:
           name: jcef-orion-embedded
-          path: dist/jcef-orion-${{ needs.build-java.outputs.version }}-embedded.jar
+          path: dist/
           if-no-files-found: error
           retention-days: 1
 
@@ -296,10 +293,11 @@ jobs:
         run: |
           set -euo pipefail
           mkdir -p publish-assets
-          cp release-assets/jcef-orion-java-api/jcef-orion-${{ needs.build-java.outputs.version }}.jar publish-assets/
-          cp release-assets/jcef-orion-java-api/jcef-orion-${{ needs.build-java.outputs.version }}-sources.jar publish-assets/
-          cp release-assets/jcef-orion-java-api/jcef-orion-${{ needs.build-java.outputs.version }}.pom publish-assets/
-          cp release-assets/jcef-orion-embedded/jcef-orion-${{ needs.build-java.outputs.version }}-embedded.jar publish-assets/
+          cp release-assets/jcef-orion-embedded/jcef-orion-${{ needs.build-java.outputs.version }}.jar publish-assets/
+          cp release-assets/jcef-orion-embedded/jcef-orion-${{ needs.build-java.outputs.version }}-sources.jar publish-assets/
+          cp release-assets/jcef-orion-embedded/jcef-orion-${{ needs.build-java.outputs.version }}.pom publish-assets/
+          cp release-assets/jcef-orion-java-api/jcef-orion-${{ needs.build-java.outputs.version }}.jar \
+             publish-assets/jcef-orion-${{ needs.build-java.outputs.version }}-portable.jar
           cp release-assets/jcef-runtime-*/*.zip publish-assets/
           (
             cd publish-assets

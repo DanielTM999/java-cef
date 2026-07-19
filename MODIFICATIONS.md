@@ -53,7 +53,7 @@ CefSettings.CefInitializationMode.DEDICATED_CEF_THREAD   (Orion; Windows/Linux o
   `LEGACY_EDT` mode it is unchanged.
 - `CefInitializationMode CefApp.getInitializationMode()`.
 - `SystemBootstrap.setRuntimeDownloadProvider(...)` - overrides where the
-  lightweight jar downloads native runtime zips from.
+  portable jar downloads native runtime zips from.
 - `SystemBootstrap.setDownloadProgressListener(...)` - reports native runtime
   download progress by platform, URL, byte counts and percentage.
 
@@ -89,7 +89,7 @@ CefSettings.CefInitializationMode.DEDICATED_CEF_THREAD   (Orion; Windows/Linux o
 | `scripts/package-portable.sh` | Build the Java API jar with shaded JOGL/GlueGen dependencies, sources jar, POM and `SHA256SUMS.txt`. |
 | `scripts/package-universal.sh` | Embed `win64`, `linux64` and `macosx64` redistributables into the optional offline jar. |
 | `scripts/validate-package.sh` | Validate a produced distribution. |
-| `.github/workflows/native-binaries.yml` | Build native redistributables per OS, publish the lightweight jar, runtime zips, optional embedded jar, and delete temporary Actions artifacts. |
+| `.github/workflows/native-binaries.yml` | Build native redistributables per OS, publish the embedded jar, portable jar, runtime zips, and delete temporary Actions artifacts. |
 
 ## Modified files
 
@@ -111,15 +111,15 @@ CefSettings.CefInitializationMode.DEDICATED_CEF_THREAD   (Orion; Windows/Linux o
 
 ## Distribution model
 
-The fork Release publishes a lightweight `jcef-orion-<version>.jar` containing
-the Java API and shaded JOGL/GlueGen dependencies. At runtime the default loader
-downloads only the current OS asset named
-`jcef-runtime-<platform>-<version>.zip`, extracts it to
-`~/.jcef-orion/<version>/<platform>`, and loads it from there.
+The fork Release publishes `jcef-orion-<version>.jar` as the primary embedded
+artifact. It contains the Java API, shaded JOGL/GlueGen dependencies and native
+runtimes for `win64`, `linux64` and `macosx64`, so it does not need a runtime
+download.
 
-For offline deployments the Release also publishes
-`jcef-orion-<version>-embedded.jar`, which contains the native runtimes for
-`win64`, `linux64` and `macosx64` and does not need a download.
+For smaller deployments the Release also publishes
+`jcef-orion-<version>-portable.jar`. At runtime the default loader downloads
+only the current OS asset named `jcef-runtime-<platform>-<version>.zip`,
+extracts it to `~/.jcef-orion/<version>/<platform>`, and loads it from there.
 
 Native binaries are Release assets, not committed to git.
 

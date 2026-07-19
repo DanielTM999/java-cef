@@ -1,9 +1,9 @@
 # Building & Packaging The JCEF Orion Fork
 
-This document covers the Orion fork additions: the downloadable native runtime
-packaging, the optional `jcef-orion-<version>-embedded.jar`, CI packaging, and
-how the Orion IDE consumes it. For the full native JCEF build (CEF download,
-JNI, per-OS toolchains) see the upstream docs and the top-level `CLAUDE.md`.
+This document covers the Orion fork additions: embedded and downloadable native
+runtime packaging, CI packaging, and how the Orion IDE consumes it. For the full
+native JCEF build (CEF download, JNI, per-OS toolchains) see the upstream docs
+and the top-level `CLAUDE.md`.
 
 ## Packaging Model
 
@@ -13,13 +13,14 @@ runtimes beside that Java layer.
 
 | Artifact | Contains | Runtime behavior |
 |---|---|---|
-| `jcef-orion-<version>.jar` from Release | Java API + shaded JOGL/GlueGen dependencies | Downloads `jcef-runtime-<platform>-<version>.zip` from the same GitHub Release when no local/embedded runtime is available, extracts it to `~/.jcef-orion/<version>/<platform>`, and loads it automatically. |
-| `jcef-orion-<version>-embedded.jar` from Release | Java API + shaded JOGL/GlueGen dependencies + `win64`, `linux64`, `macosx64` JCEF/CEF runtimes | Extracts the current OS runtime to `~/.jcef-orion/<version>/<platform>` and loads it automatically without network access. |
-| `jcef-runtime-<platform>-<version>.zip` from Release | Standalone native runtime files for one platform | Used by the lightweight jar downloader and useful for manual inspection or external packaging. |
+| `jcef-orion-<version>.jar` from Release | Java API + shaded JOGL/GlueGen dependencies + `win64`, `linux64`, `macosx64` JCEF/CEF runtimes | Extracts the current OS runtime to `~/.jcef-orion/<version>/<platform>` and loads it automatically without network access. |
+| `jcef-orion-<version>-portable.jar` from Release | Java API + shaded JOGL/GlueGen dependencies | Downloads `jcef-runtime-<platform>-<version>.zip` from the same GitHub Release when no local/embedded runtime is available, extracts it to `~/.jcef-orion/<version>/<platform>`, and loads it automatically. |
+| `jcef-runtime-<platform>-<version>.zip` from Release | Standalone native runtime files for one platform | Used by the portable jar downloader and useful for manual inspection or external packaging. |
 | local `scripts/package-portable.sh` jar | Java API + shaded JOGL/GlueGen dependencies | Downloads the matching runtime zip from the configured provider, or uses native JCEF/CEF from `java.library.path` when already present. |
 
-The normal Release jar stays small and downloads only the current OS runtime.
-The `-embedded` jar is intentionally large for offline/no-download deployments.
+The normal Release jar is intentionally large for offline/no-download
+deployments. The `-portable` jar stays small and downloads only the current OS
+runtime.
 
 The default downloader resolves assets from:
 
@@ -28,10 +29,10 @@ https://github.com/DanielTM999/java-cef/releases/download/v<version>/jcef-runtim
 ```
 
 Set `jcef.orion.release.tag`, `jcef.orion.runtime.base-url`, or
-`jcef.orion.runtime.url` to point at another Release or mirror. Applications can
-also install a Java provider with `SystemBootstrap.setRuntimeDownloadProvider`.
-Download progress is reported through
-`SystemBootstrap.setDownloadProgressListener`.
+`jcef.orion.runtime.url` to point the portable jar at another Release or mirror.
+Applications can also install a Java provider with
+`SystemBootstrap.setRuntimeDownloadProvider`. Download progress is reported
+through `SystemBootstrap.setDownloadProgressListener`.
 
 ## Build Locally
 
@@ -68,6 +69,11 @@ jcef-orion-1.0.0.pom
 SHA256SUMS.txt
 ```
 
+This local jar is the portable/base jar. In the Release workflow it is copied as
+`jcef-orion-<version>-portable.jar`; the primary Release
+`jcef-orion-<version>.jar` is produced later by `package-universal.sh` with
+native runtimes embedded.
+
 To assemble the offline jar with embedded native runtimes locally, first create
 one or more native redistributables under `binary_distrib/<platform>`, then run:
 
@@ -85,7 +91,7 @@ to publish unless all three runtimes are present.
 
 | Workflow | Trigger | What it does |
 |---|---|---|
-| `.github/workflows/native-binaries.yml` | manual, tag `v*` or `native-v*` | Builds native redistributables for `win64`, `linux64` and `macosx64`, publishes the lightweight jar, runtime zips, the optional embedded jar, and then deletes temporary Actions artifacts. |
+| `.github/workflows/native-binaries.yml` | manual, tag `v*` or `native-v*` | Builds native redistributables for `win64`, `linux64` and `macosx64`, publishes the embedded jar, the portable jar, runtime zips, and then deletes temporary Actions artifacts. |
 
 Manual run example:
 
@@ -102,10 +108,10 @@ sha256sum -c SHA256SUMS.txt
 ## How Orion Consumes The Fork
 
 Put `jcef-orion-<version>.jar` ahead of jcefmaven's bundled `jcef.jar` on the
-classpath or module path so the fork's `org.cef.*` classes win. The default
-`SystemBootstrap` loader downloads, extracts and loads the current OS runtime
-automatically. Use `jcef-orion-<version>-embedded.jar` when downloads are not
-allowed.
+classpath or module path so the fork's `org.cef.*` classes win. That primary
+jar embeds all supported runtimes and does not need downloads. Use
+`jcef-orion-<version>-portable.jar` when you want the smaller jar that downloads
+only the current OS runtime.
 
 Optional progress/provider configuration:
 

@@ -5,16 +5,18 @@
 #
 # Orion fork addition. See MODIFICATIONS.md.
 #
-# Builds the Java API distribution artifacts:
+# Builds the Java API distribution artifacts used as the lightweight/portable
+# Release asset and as the base for the embedded jar:
 #   - jcef-orion-<version>.jar          (the Java API classes)
 #   - jcef-orion-<version>-sources.jar  (the matching sources)
 #   - jcef-orion-<version>.pom          (a consumable Maven POM)
 #   - SHA256SUMS.txt                    (checksums of the above)
 #
-# This script does not bundle native runtimes. Release builds publish matching
-# jcef-runtime-<platform>-<version>.zip assets that this jar can download at
-# runtime. Use package-universal.sh after producing binary_distrib/<platform>
-# outputs to build the optional offline embedded jar.
+# This script does not bundle native runtimes. The Release workflow publishes
+# this jar as jcef-orion-<version>-portable.jar and publishes matching
+# jcef-runtime-<platform>-<version>.zip assets that it can download at runtime.
+# Use package-universal.sh after producing binary_distrib/<platform> outputs to
+# build the primary offline embedded jar.
 #
 #   tools/compile.sh linux64
 #   scripts/package-portable.sh 146.0.0 dist
@@ -97,10 +99,10 @@ cat > "${OUT_DIR}/${POM_NAME}" <<EOF
   <name>JCEF (Orion fork)</name>
   <description>Java Chromium Embedded Framework, Orion fork with a dedicated CEF
     initialization thread (DEDICATED_CEF_THREAD) so native init never blocks the
-    Swing EDT. This lightweight jar embeds JOGL/GlueGen classes and downloads
-    the current OS native runtime from jcef-runtime-&lt;platform&gt;-&lt;version&gt;.zip
-    Release assets when needed. Use the -embedded jar asset for offline
-    deployments without runtime downloads.</description>
+    Swing EDT. The primary Release jar embeds native runtimes for win64,
+    linux64 and macosx64. The -portable Release jar embeds only JOGL/GlueGen
+    classes and downloads the current OS native runtime from
+    jcef-runtime-&lt;platform&gt;-&lt;version&gt;.zip assets when needed.</description>
   <url>https://github.com/DanielTM999/java-cef</url>
   <licenses>
     <license>
