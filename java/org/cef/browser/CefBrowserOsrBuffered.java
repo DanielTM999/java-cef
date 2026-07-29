@@ -520,6 +520,11 @@ class CefBrowserOsrBuffered extends CefBrowser_N implements CefRenderHandler, Ce
                 @Override
                 public void mousePressed(MouseEvent e) {
                     requestFocusInWindow();
+                    // Assert the render-widget focus on every press. In windowless
+                    // mode the blinking caret is only shown while the widget is
+                    // focused, and relying solely on the AWT focusGained event is
+                    // unreliable for a lightweight component embedded in Swing.
+                    CefBrowserOsrBuffered.this.setFocus(true);
                     if (e.getButton() == MouseEvent.BUTTON2) {
                         // Middle click toggles Chromium autoscroll; mirror its
                         // four-way cursor since the native panning cursor is not
@@ -575,6 +580,13 @@ class CefBrowserOsrBuffered extends CefBrowser_N implements CefRenderHandler, Ce
             addKeyListener(new KeyListener() {
                 @Override
                 public void keyTyped(KeyEvent e) {
+                    // AWT reports the Enter key as '\n' (line feed), but web forms
+                    // trigger implicit submission on the '\r' (carriage return)
+                    // character event, matching what a native Windows browser
+                    // delivers. Remap it so Enter submits forms in OSR mode.
+                    if (e.getKeyChar() == '\n') {
+                        e.setKeyChar('\r');
+                    }
                     sendKeyEvent(e);
                 }
 

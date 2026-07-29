@@ -1,0 +1,3 @@
+69b2049b35d2e7f2a3a3896da22a45d65873fd2d60688815e0cc60ea74479cb9 *jcef-orion-1.0.0-portable.jar
+2bf259eb4377123073ec1194e11bd2553322b7c43361c9c1fd398e38adcf6426 *jcef-orion-1.0.0-portable-sources.jar
+e1a542043303703eaf70b285a70ee67eca3cbe0259cf6adf4be27e81c9efe552 *jcef-orion-1.0.0-portable.pom
