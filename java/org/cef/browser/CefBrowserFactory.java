@@ -13,8 +13,20 @@ import org.cef.CefClient;
 public class CefBrowserFactory {
     public static CefBrowser create(CefClient client, String url, boolean isOffscreenRendered,
             boolean isTransparent, CefRequestContext context, CefBrowserSettings settings) {
-        if (isOffscreenRendered)
-            return new CefBrowserOsr(client, url, isTransparent, context, settings);
-        return new CefBrowserWr(client, url, context, settings);
+        return create(client, url, CefRendering.fromLegacy(isOffscreenRendered), isTransparent,
+                context, settings);
+    }
+
+    public static CefBrowser create(CefClient client, String url, CefRendering rendering,
+            boolean isTransparent, CefRequestContext context, CefBrowserSettings settings) {
+        switch (rendering) {
+            case OFFSCREEN_BUFFERED:
+                return new CefBrowserOsrBuffered(client, url, isTransparent, context, settings);
+            case OFFSCREEN:
+                return new CefBrowserOsr(client, url, isTransparent, context, settings);
+            case WINDOWED:
+            default:
+                return new CefBrowserWr(client, url, context, settings);
+        }
     }
 }

@@ -150,6 +150,22 @@ public class CefClient extends CefClientHandler
                 this, url, isOffscreenRendered, isTransparent, context, settings);
     }
 
+    public CefBrowser createBrowser(String url, CefRendering rendering, boolean isTransparent) {
+        return createBrowser(url, rendering, isTransparent, null, null);
+    }
+
+    public CefBrowser createBrowser(String url, CefRendering rendering, boolean isTransparent,
+            CefRequestContext context) {
+        return createBrowser(url, rendering, isTransparent, context, null);
+    }
+
+    public CefBrowser createBrowser(String url, CefRendering rendering, boolean isTransparent,
+            CefRequestContext context, CefBrowserSettings settings) {
+        if (isDisposed_)
+            throw new IllegalStateException("Can't create browser. CefClient is disposed");
+        return CefBrowserFactory.create(this, url, rendering, isTransparent, context, settings);
+    }
+
     @Override
     protected CefBrowser getBrowser(int identifier) {
         synchronized (browser_) {

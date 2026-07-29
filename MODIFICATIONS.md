@@ -57,6 +57,37 @@ CefSettings.CefInitializationMode.DEDICATED_CEF_THREAD   (Orion; Windows/Linux o
 - `SystemBootstrap.setDownloadProgressListener(...)` - reports native runtime
   download progress by platform, URL, byte counts and percentage.
 
+### Buffered (lightweight) off-screen rendering
+
+Upstream ships two `CefBrowser` implementations: `CefBrowserWr` (windowed) and
+`CefBrowserOsr` (off-screen via a JOGL `GLCanvas`). Both expose a **heavyweight**
+AWT peer, so embedding a browser next to Swing content (tabs, split panes)
+flickers whenever a sibling relayouts or repaints.
+
+This fork adds a third implementation, `CefBrowserOsrBuffered`, that paints the
+off-screen `onPaint` pixel buffer into a lightweight, double-buffered
+`JComponent` via a software `BufferedImage`. It reuses the existing native
+windowless path unchanged (created with a `0` window handle, exactly as
+`CefBrowserOsr` already does), so **no native/C++ change is required**. It
+handles input, focus, cursor, drag-and-drop, HiDPI scaling and `<select>`
+popups.
+
+Selection is done with the new `CefRendering` enum, keeping every existing
+boolean-based `createBrowser` overload untouched:
+
+```java
+// heavyweight windowed (unchanged default)
+client.createBrowser(url, CefRendering.WINDOWED, false);
+// heavyweight GLCanvas OSR (== legacy isOffscreenRendered=true)
+client.createBrowser(url, CefRendering.OFFSCREEN, false);
+// new lightweight, flicker-free software OSR
+client.createBrowser(url, CefRendering.OFFSCREEN_BUFFERED, false);
+```
+
+Requires `CefSettings.windowless_rendering_enabled = true` (as any OSR mode
+does). The legacy `createBrowser(url, boolean isOffscreenRendered, ...)`
+overloads map to `WINDOWED` / `OFFSCREEN` and are unchanged.
+
 ### Supported platforms for `DEDICATED_CEF_THREAD`
 
 | Platform | Behavior |
@@ -79,6 +110,9 @@ CefSettings.CefInitializationMode.DEDICATED_CEF_THREAD   (Orion; Windows/Linux o
 
 | File | Purpose |
 |---|---|
+| `java/org/cef/browser/CefBrowserOsrBuffered.java` | Lightweight software OSR browser painting into a `BufferedImage`/`JComponent` (flicker-free embedding). |
+| `java/org/cef/browser/CefRendering.java` | Rendering-mode enum (`WINDOWED` / `OFFSCREEN` / `OFFSCREEN_BUFFERED`). |
+| `java/org/cef/browser/CefScrollConfigurable.java` | Public interface to tune the OSR mouse-wheel pixels-per-notch at runtime (implemented by `CefBrowserOsrBuffered`). |
 | `java/org/cef/CefMainThread.java` | The dedicated `Orion-JCEF-Main` single-thread executor. |
 | `java/org/cef/CefInitializationException.java` | Rich Java exception wrapping native init failures. |
 | `java/tests/junittests/CefMainThreadTest.java` | Pure-Java unit tests for the owner thread. |
@@ -98,6 +132,8 @@ CefSettings.CefInitializationMode.DEDICATED_CEF_THREAD   (Orion; Windows/Linux o
 | `java/org/cef/CefSettings.java` | Added `CefInitializationMode` enum + `initialization_mode` field. |
 | `java/org/cef/CefApp.java` | Mode resolution; dedicated owner-thread dispatch for pre-init / init / message-loop / shutdown; `initializeAsync()` / `createClientAsync()`; one-shot native-init guard; bundled-native library path lookup; logging. Legacy EDT path preserved. |
 | `java/org/cef/SystemBootstrap.java` | Default loader can extract embedded per-OS native runtime resources, download missing runtime zips from a configurable provider, report download progress, and load native libraries from the extracted cache. |
+| `java/org/cef/browser/CefBrowserFactory.java` | Added `create(...)` overload taking a `CefRendering` mode; legacy boolean overload delegates to it. |
+| `java/org/cef/CefClient.java` | Added `createBrowser(...)` overloads taking a `CefRendering` mode. |
 | `tools/compile.sh`, `tools/compile.bat` | Also compile the new `tests/orion` package; Windows compilation now uses an argument file so `javac` receives expanded source paths reliably. |
 | `tools/make_jar.bat` | Packages class directories with `jar -C` instead of relying on Windows wildcard expansion. |
 | `CMakeLists.txt` | Added `JCEF_DOWNLOAD_CLANG_FORMAT=OFF` option so CI can avoid the Chromium `gsutil` / Python `six.moves` failure while configuring native builds. |
