@@ -59,5 +59,7 @@ Thumbs.db
 /tools/buildtools/win/clang-format.exe
 
 # Orion fork packaging output
-.idea
+.idea/
 dist/
+dist_rebuild/
+.agents/
