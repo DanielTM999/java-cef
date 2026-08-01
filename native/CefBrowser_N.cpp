@@ -1523,12 +1523,15 @@ Java_org_cef_browser_CefBrowser_1N_N_1SetWindowVisibility(JNIEnv* env,
                                                           jobject obj,
                                                           jboolean visible) {
   CefRefPtr<CefBrowser> browser = JNI_GET_BROWSER_OR_RETURN(env, obj);
+  CefRefPtr<CefBrowserHost> host = browser->GetHost();
+
+  if (host->IsWindowRenderingDisabled()) {
+    host->WasHidden(visible == JNI_FALSE);
+    return;
+  }
 
 #if defined(OS_MACOSX)
-  if (!browser->GetHost()->IsWindowRenderingDisabled()) {
-    util_mac::SetVisibility(browser->GetHost()->GetWindowHandle(),
-                            visible != JNI_FALSE);
-  }
+  util_mac::SetVisibility(host->GetWindowHandle(), visible != JNI_FALSE);
 #endif
 }
 JNIEXPORT jdouble JNICALL
