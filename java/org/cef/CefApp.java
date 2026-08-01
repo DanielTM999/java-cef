@@ -18,6 +18,11 @@ import java.nio.file.Path;
 import java.nio.file.Paths;
 import java.util.HashSet;
 import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.Executors;
+import java.util.concurrent.RejectedExecutionException;
+import java.util.concurrent.ScheduledExecutorService;
+import java.util.concurrent.ScheduledFuture;
+import java.util.concurrent.TimeUnit;
 
 import javax.swing.SwingUtilities;
 import javax.swing.Timer;
@@ -134,6 +139,8 @@ public class CefApp extends CefAppHandlerAdapter {
     private static CefAppHandler appHandler_ = null;
     private static CefAppState state_ = CefAppState.NONE;
     private Timer workTimer_ = null;
+    private ScheduledExecutorService pumpScheduler_ = null;
+    private ScheduledFuture<?> pendingPump_ = null;
     private HashSet<CefClient> clients_ = new HashSet<CefClient>();
     private CefSettings settings_ = null;
 
@@ -712,6 +719,7 @@ public class CefApp extends CefAppHandlerAdapter {
     private final void shutdown() {
         // The shutdown must run on the same owner thread used for initialization.
         // Always call asynchronously so the call stack has a chance to unwind.
+        stopDedicatedPump();
         Runnable r = new Runnable() {
             @Override
             public void run() {
@@ -756,6 +764,14 @@ public class CefApp extends CefAppHandlerAdapter {
      * Windows with windowed rendering.
      */
     public final void doMessageLoopWork(final long delay_ms) {
+        if (initMode_ == CefInitializationMode.DEDICATED_CEF_THREAD) {
+            // Orion fork: the native pump already runs on Orion-JCEF-Main, so the
+            // scheduler must stay off the EDT. Driving the cadence from the EDT
+            // couples message-loop work (input, rendering, DevTools) to Swing
+            // paint/event load and starves it under pressure.
+            scheduleDedicatedPump(delay_ms);
+            return;
+        }
         // Execute on the AWT event dispatching thread.
         SwingUtilities.invokeLater(new Runnable() {
             @Override
@@ -799,6 +815,53 @@ public class CefApp extends CefAppHandlerAdapter {
                 }
             }
         });
+    }
+
+    /**
+     * Orion fork: off-EDT message-pump scheduler for DEDICATED_CEF_THREAD mode.
+     * A single daemon thread paces the pump; the native iteration itself is
+     * routed to Orion-JCEF-Main by {@link #invokeDoMessageLoopWork()}. Only one
+     * tick is ever outstanding: a new schedule request cancels the pending one.
+     */
+    private synchronized void scheduleDedicatedPump(long delay_ms) {
+        if (getState() == CefAppState.TERMINATED) return;
+        if (pumpScheduler_ == null) {
+            pumpScheduler_ = Executors.newSingleThreadScheduledExecutor(runnable -> {
+                Thread t = new Thread(runnable, "Orion-JCEF-Pump");
+                t.setDaemon(true);
+                return t;
+            });
+        }
+        final long kMaxTimerDelay = 1000 / 60; // 60fps
+        long timer_delay_ms = delay_ms;
+        if (timer_delay_ms < 0) timer_delay_ms = 0;
+        if (timer_delay_ms > kMaxTimerDelay) timer_delay_ms = kMaxTimerDelay;
+        if (pendingPump_ != null) pendingPump_.cancel(false);
+        try {
+            pendingPump_ = pumpScheduler_.schedule(
+                    pumpTick_, timer_delay_ms, TimeUnit.MILLISECONDS);
+        } catch (RejectedExecutionException ignored) {
+        }
+    }
+
+    private final Runnable pumpTick_ = new Runnable() {
+        @Override
+        public void run() {
+            if (getState() == CefAppState.TERMINATED) return;
+            invokeDoMessageLoopWork();
+            scheduleDedicatedPump(1000 / 60);
+        }
+    };
+
+    private synchronized void stopDedicatedPump() {
+        if (pendingPump_ != null) {
+            pendingPump_.cancel(false);
+            pendingPump_ = null;
+        }
+        if (pumpScheduler_ != null) {
+            pumpScheduler_.shutdownNow();
+            pumpScheduler_ = null;
+        }
     }
 
     /**
