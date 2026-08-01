@@ -252,7 +252,7 @@ class CefBrowserOsrBuffered extends CefBrowser_N implements CefRenderHandler, Ce
                 storeMain(dirtyRects, buffer, width, height);
             }
         }
-        repaintCanvas();
+        repaintCanvas(popup ? null : dirtyRects);
 
         if (!onPaintListeners.isEmpty()) {
             CefPaintEvent paintEvent =
@@ -333,6 +333,40 @@ class CefBrowserOsrBuffered extends CefBrowser_N implements CefRenderHandler, Ce
         if (canvas != null) {
             canvas.repaint();
         }
+    }
+
+    private void repaintCanvas(Rectangle[] dirtyRects) {
+        BufferedCanvas canvas = canvas_;
+        if (canvas == null) {
+            return;
+        }
+        if (dirtyRects == null || dirtyRects.length == 0) {
+            canvas.repaint();
+            return;
+        }
+        double sf = scaleFactor_ <= 0 ? 1.0 : scaleFactor_;
+        int minX = Integer.MAX_VALUE;
+        int minY = Integer.MAX_VALUE;
+        int maxX = Integer.MIN_VALUE;
+        int maxY = Integer.MIN_VALUE;
+        for (Rectangle rect : dirtyRects) {
+            if (rect.width <= 0 || rect.height <= 0) {
+                continue;
+            }
+            minX = Math.min(minX, rect.x);
+            minY = Math.min(minY, rect.y);
+            maxX = Math.max(maxX, rect.x + rect.width);
+            maxY = Math.max(maxY, rect.y + rect.height);
+        }
+        if (minX > maxX || minY > maxY) {
+            canvas.repaint();
+            return;
+        }
+        int x = (int) Math.floor(minX / sf) - 1;
+        int y = (int) Math.floor(minY / sf) - 1;
+        int right = (int) Math.ceil(maxX / sf) + 1;
+        int bottom = (int) Math.ceil(maxY / sf) + 1;
+        canvas.repaint(x, y, right - x, bottom - y);
     }
 
     @Override
@@ -666,17 +700,24 @@ class CefBrowserOsrBuffered extends CefBrowser_N implements CefRenderHandler, Ce
                         return;
                     }
                     double sf = scaleFactor_ <= 0 ? 1.0 : scaleFactor_;
-                    AffineTransform saved = g2.getTransform();
-                    g2.setRenderingHint(RenderingHints.KEY_INTERPOLATION,
-                            RenderingHints.VALUE_INTERPOLATION_BILINEAR);
-                    g2.scale(1.0 / sf, 1.0 / sf);
-                    g2.drawImage(mainImage_, 0, 0, null);
-                    if (popupVisible_ && popupImage_ != null && popupRect_.width > 0) {
-                        int px = (int) Math.round(popupRect_.x * sf);
-                        int py = (int) Math.round(popupRect_.y * sf);
-                        g2.drawImage(popupImage_, px, py, null);
+                    if (sf == 1.0) {
+                        g2.drawImage(mainImage_, 0, 0, null);
+                        if (popupVisible_ && popupImage_ != null && popupRect_.width > 0) {
+                            g2.drawImage(popupImage_, popupRect_.x, popupRect_.y, null);
+                        }
+                    } else {
+                        AffineTransform saved = g2.getTransform();
+                        g2.setRenderingHint(RenderingHints.KEY_INTERPOLATION,
+                                RenderingHints.VALUE_INTERPOLATION_BILINEAR);
+                        g2.scale(1.0 / sf, 1.0 / sf);
+                        g2.drawImage(mainImage_, 0, 0, null);
+                        if (popupVisible_ && popupImage_ != null && popupRect_.width > 0) {
+                            int px = (int) Math.round(popupRect_.x * sf);
+                            int py = (int) Math.round(popupRect_.y * sf);
+                            g2.drawImage(popupImage_, px, py, null);
+                        }
+                        g2.setTransform(saved);
                     }
-                    g2.setTransform(saved);
                 }
             } finally {
                 g2.dispose();

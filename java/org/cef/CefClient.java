@@ -83,6 +83,7 @@ public class CefClient extends CefClientHandler
     private CefRequestHandler requestHandler_ = null;
     private boolean isDisposed_ = false;
     private volatile CefBrowser focusedBrowser_ = null;
+    private boolean settingBrowserFocus_ = false;
     private final PropertyChangeListener propertyChangeListener = new PropertyChangeListener() {
         @Override
         public void propertyChange(PropertyChangeEvent evt) {
@@ -472,9 +473,15 @@ public class CefClient extends CefClientHandler
     @Override
     public void onGotFocus(CefBrowser browser) {
         if (browser == null) return;
+        if (settingBrowserFocus_) return;
 
         focusedBrowser_ = browser;
-        browser.setFocus(true);
+        settingBrowserFocus_ = true;
+        try {
+            browser.setFocus(true);
+        } finally {
+            settingBrowserFocus_ = false;
+        }
         if (focusHandler_ != null) focusHandler_.onGotFocus(browser);
     }
 

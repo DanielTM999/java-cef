@@ -764,7 +764,7 @@ public class CefApp extends CefAppHandlerAdapter {
 
                 // The maximum number of milliseconds we're willing to wait between
                 // calls to DoMessageLoopWork().
-                final long kMaxTimerDelay = 1000 / 30; // 30fps
+                final long kMaxTimerDelay = 1000 / 60; // 60fps
 
                 if (workTimer_ != null) {
                     workTimer_.stop();
