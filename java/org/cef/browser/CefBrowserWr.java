@@ -17,11 +17,15 @@ import java.awt.Container;
 import java.awt.Dimension;
 import java.awt.Graphics;
 import java.awt.Graphics2D;
+import java.awt.KeyboardFocusManager;
 import java.awt.MouseInfo;
 import java.awt.Point;
+import java.awt.PointerInfo;
 import java.awt.Rectangle;
 import java.awt.Toolkit;
 import java.awt.Window;
+import java.awt.AWTEvent;
+import java.awt.event.AWTEventListener;
 import java.awt.event.ActionEvent;
 import java.awt.event.ActionListener;
 import java.awt.event.FocusEvent;
@@ -29,6 +33,8 @@ import java.awt.event.FocusListener;
 import java.awt.event.HierarchyBoundsListener;
 import java.awt.event.HierarchyEvent;
 import java.awt.event.HierarchyListener;
+import java.awt.event.KeyEvent;
+import java.awt.event.MouseAdapter;
 import java.awt.event.MouseEvent;
 import java.awt.event.MouseWheelEvent;
 import java.awt.image.BufferedImage;
@@ -48,6 +54,20 @@ import javax.swing.ToolTipManager;
  * CefBrowser instance, please use CefBrowserFactory.
  */
 class CefBrowserWr extends CefBrowser_N {
+    // Orion fork addition. See MODIFICATIONS.md.
+    // On X11 the keyboard focus stays on the embedder's top-level window and
+    // AWT never sees mouse events that land on the browser's own child window,
+    // so nothing ever tells the browser to take the keyboard. Track the pointer
+    // crossing into the child window instead and keep asserting focus while it
+    // stays there: a single SetFocus does not survive, because click-to-focus
+    // window managers hand the focus back to the top-level on every click.
+    private static final String POINTER_FOCUS_PROPERTY = "jcef.orion.linux.pointer-focus";
+    private static final int POINTER_FOCUS_INTERVAL_MS = 400;
+    private static final long TYPING_GRACE_NANOS = 3_000_000_000L;
+    private static volatile long lastEmbedderKeyNanos_ = 0;
+    private static boolean keyWatcherInstalled_ = false;
+    private Timer pointerFocusTimer_ = null;
+
     private Canvas canvas_ = null;
     private Component component_ = null;
     private Rectangle content_rect_ = new Rectangle(0, 0, 0, 0);
@@ -260,6 +280,9 @@ class CefBrowserWr extends CefBrowser_N {
             // Swing component triggers a relayout.
             canvas_.setIgnoreRepaint(true);
             ((JPanel) component_).add(canvas_, BorderLayout.CENTER);
+            if (OS.isLinux()) {
+                installPointerFocus();
+            }
         }
 
         // Initial minimal size of the component. Otherwise the UI won't work
@@ -298,6 +321,78 @@ class CefBrowserWr extends CefBrowser_N {
                 }
             }
         });
+    }
+
+    private static boolean isPointerFocusEnabled() {
+        return Boolean.parseBoolean(System.getProperty(POINTER_FOCUS_PROPERTY, "true"));
+    }
+
+    private void installPointerFocus() {
+        if (!isPointerFocusEnabled()) return;
+
+        installKeyWatcher();
+        canvas_.addMouseListener(new MouseAdapter() {
+            @Override
+            public void mouseExited(MouseEvent e) {
+                // A mouse-exited event whose position is still inside the canvas
+                // means the pointer moved into the browser's child window.
+                if (e.getX() < 0 || e.getY() < 0 || e.getX() >= canvas_.getWidth()
+                        || e.getY() >= canvas_.getHeight()) {
+                    return;
+                }
+                startPointerFocus();
+            }
+        });
+    }
+
+    private static synchronized void installKeyWatcher() {
+        if (keyWatcherInstalled_) return;
+        keyWatcherInstalled_ = true;
+        Toolkit.getDefaultToolkit().addAWTEventListener(new AWTEventListener() {
+            @Override
+            public void eventDispatched(AWTEvent event) {
+                if (event.getID() == KeyEvent.KEY_PRESSED) {
+                    lastEmbedderKeyNanos_ = System.nanoTime();
+                }
+            }
+        }, AWTEvent.KEY_EVENT_MASK);
+    }
+
+    private void startPointerFocus() {
+        if (pointerFocusTimer_ == null) {
+            pointerFocusTimer_ = new Timer(POINTER_FOCUS_INTERVAL_MS, new ActionListener() {
+                @Override
+                public void actionPerformed(ActionEvent e) {
+                    if (isClosed() || !isPointerOverBrowser()) {
+                        pointerFocusTimer_.stop();
+                        return;
+                    }
+                    if (isEmbedderTyping()) return;
+                    setFocus(true);
+                }
+            });
+        }
+        pointerFocusTimer_.start();
+    }
+
+    private boolean isPointerOverBrowser() {
+        if (component_ == null || !component_.isShowing()) return false;
+
+        PointerInfo info = MouseInfo.getPointerInfo();
+        if (info == null) return false;
+
+        Point pointer = info.getLocation();
+        Point origin = component_.getLocationOnScreen();
+        return pointer.x >= origin.x && pointer.y >= origin.y
+                && pointer.x < origin.x + component_.getWidth()
+                && pointer.y < origin.y + component_.getHeight();
+    }
+
+    private boolean isEmbedderTyping() {
+        if (System.nanoTime() - lastEmbedderKeyNanos_ >= TYPING_GRACE_NANOS) return false;
+
+        Component owner = KeyboardFocusManager.getCurrentKeyboardFocusManager().getFocusOwner();
+        return owner != null && !SwingUtilities.isDescendingFrom(owner, component_);
     }
 
     @Override

@@ -1533,6 +1533,38 @@ Java_org_cef_browser_CefBrowser_1N_N_1SetFocus(JNIEnv* env,
                                                jboolean enable) {
   CefRefPtr<CefBrowser> browser = JNI_GET_BROWSER_OR_RETURN(env, obj);
   browser->GetHost()->SetFocus(enable != JNI_FALSE);
+
+#if defined(OS_WIN)
+  // Orion fork addition. See MODIFICATIONS.md.
+  // For windowed rendering SetFocus(false) only blurs the web contents: the
+  // native keyboard focus stays on Chromium's child window, so the embedding
+  // Java window keeps receiving no keystrokes. Hand the native focus back to
+  // the AWT parent window, attaching to its input queue because the window is
+  // owned by the AWT toolkit thread.
+  if (enable == JNI_FALSE) {
+    CefRefPtr<CefBrowserHost> host = browser->GetHost();
+    if (!host->IsWindowRenderingDisabled()) {
+      HWND browserWindow = host->GetWindowHandle();
+      HWND parentWindow = browserWindow ? GetParent(browserWindow) : nullptr;
+      if (parentWindow) {
+        DWORD parentThread = GetWindowThreadProcessId(parentWindow, nullptr);
+        DWORD currentThread = GetCurrentThreadId();
+        bool attached = false;
+        if (parentThread != 0 && parentThread != currentThread) {
+          attached =
+              AttachThreadInput(currentThread, parentThread, TRUE) != FALSE;
+        }
+        HWND focused = GetFocus();
+        if (focused == browserWindow || IsChild(browserWindow, focused)) {
+          ::SetFocus(parentWindow);
+        }
+        if (attached) {
+          AttachThreadInput(currentThread, parentThread, FALSE);
+        }
+      }
+    }
+  }
+#endif
 }
 
 JNIEXPORT void JNICALL

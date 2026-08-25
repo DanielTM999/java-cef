@@ -101,11 +101,45 @@ embedders that prefer the native surface over `OFFSCREEN_BUFFERED`:
   it is immediately overdrawn by the child window.
 - `native/CefBrowser_N.cpp` adds `WS_CLIPCHILDREN` to the parent window and its
   ancestors up to the top-level window when a windowed browser is created, so
-  those windows stop painting over the browser's child window. This is the only
-  native change in the fork; it is Windows-only and scoped to the windowed
-  creation path.
+  those windows stop painting over the browser's child window. Windows-only and
+  scoped to the windowed creation path.
 
 Neither affects `OFFSCREEN` or `OFFSCREEN_BUFFERED`.
+
+### Windowed-rendering focus hand-back (Windows)
+
+`CefBrowserHost::SetFocus(false)` only blurs the web contents — the native
+keyboard focus stays on Chromium's child window. An embedder that puts Swing
+input fields next to a windowed browser therefore cannot get keystrokes back:
+the field appears focused to Java while Windows keeps routing keys to Chromium.
+
+`N_SetFocus` now hands the native focus back to the AWT parent window when
+`enable` is `false` and the browser is windowed. It attaches to the parent's
+input queue first (`AttachThreadInput`), because the AWT windows are owned by
+the toolkit thread rather than by the caller, and only moves the focus when it
+currently sits on the browser window or one of its children. Windowless
+browsers are untouched.
+
+### Windowed-rendering keyboard focus (Linux/X11)
+
+On X11 the keyboard focus stays on the embedder's top-level window and AWT never
+receives mouse events that land on the browser's own child window, so nothing
+ever tells a windowed browser to take the keyboard: clicking a page and typing
+sends the keystrokes to whatever Swing component holds the AWT focus. Upstream
+relies on the hosting `Canvas` gaining AWT focus, which cannot happen there.
+
+`CefBrowserWr` now watches the pointer instead. A `mouseExited` whose position
+is still inside the canvas means the pointer moved into the browser's child
+window; that arms a 400 ms timer which keeps calling `setFocus(true)` for as
+long as the pointer stays over the browser. Re-asserting is required rather than
+optional: click-to-focus window managers hand the focus back to the top-level
+window on every click, which would undo a single `setFocus`.
+
+To avoid stealing the keyboard from an embedder field that is being typed into,
+the timer skips while the AWT focus owner is outside the browser component and a
+key was pressed in the last 3 seconds. Set `-Djcef.orion.linux.pointer-focus=false`
+to disable the whole mechanism. Windows, macOS and both off-screen modes are
+unaffected.
 
 ### Supported platforms for `DEDICATED_CEF_THREAD`
 
@@ -153,8 +187,8 @@ Neither affects `OFFSCREEN` or `OFFSCREEN_BUFFERED`.
 | `java/org/cef/SystemBootstrap.java` | Default loader can extract embedded per-OS native runtime resources, download missing runtime zips from a configurable provider, report download progress, and load native libraries from the extracted cache. |
 | `java/org/cef/browser/CefBrowserFactory.java` | Added `create(...)` overload taking a `CefRendering` mode; legacy boolean overload delegates to it. |
 | `java/org/cef/CefClient.java` | Added `createBrowser(...)` overloads taking a `CefRendering` mode. |
-| `java/org/cef/browser/CefBrowserWr.java` | `setIgnoreRepaint(true)` on the hosting `Canvas` to cut windowed-rendering flicker. |
-| `native/CefBrowser_N.cpp` | Windows only: sets `WS_CLIPCHILDREN` on the AWT parent window chain when creating a windowed browser. |
+| `java/org/cef/browser/CefBrowserWr.java` | `setIgnoreRepaint(true)` on the hosting `Canvas` to cut windowed-rendering flicker; pointer-driven keyboard focus for windowed browsers on Linux/X11. |
+| `native/CefBrowser_N.cpp` | Windows only: sets `WS_CLIPCHILDREN` on the AWT parent window chain when creating a windowed browser; `N_SetFocus(false)` hands the native keyboard focus back to the AWT parent window. |
 | `tools/compile.sh`, `tools/compile.bat` | Also compile the new `tests/orion` package; Windows compilation now uses an argument file so `javac` receives expanded source paths reliably. |
 | `tools/make_jar.bat` | Packages class directories with `jar -C` instead of relying on Windows wildcard expansion. |
 | `CMakeLists.txt` | Added `JCEF_DOWNLOAD_CLANG_FORMAT=OFF` option so CI can avoid the Chromium `gsutil` / Python `six.moves` failure while configuring native builds. |
@@ -163,8 +197,8 @@ Neither affects `OFFSCREEN` or `OFFSCREEN_BUFFERED`.
 ## Not modified
 
 - `LICENSE.txt` and all copyright headers.
-- Native C++ except for the windowed-rendering `WS_CLIPCHILDREN` change in
-  `native/CefBrowser_N.cpp` (`native/context.cpp`, `native/CefApp.cpp`, etc. are
+- Native C++ except for the windowed-rendering `WS_CLIPCHILDREN` and focus
+  hand-back changes in `native/CefBrowser_N.cpp` (`native/context.cpp`, `native/CefApp.cpp`, etc. are
   untouched).
 - Upstream behavior when `initialization_mode` is left at its default.
 
