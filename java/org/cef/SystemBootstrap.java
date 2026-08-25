@@ -16,10 +16,11 @@ import java.nio.file.Path;
 import java.nio.file.Paths;
 import java.nio.file.StandardCopyOption;
 import java.util.HashSet;
+import java.util.Enumeration;
 import java.util.List;
 import java.util.Set;
 import java.util.zip.ZipEntry;
-import java.util.zip.ZipInputStream;
+import java.util.zip.ZipFile;
 
 /**
  * To allow customization of System.load() calls by supplying a different
@@ -85,6 +86,7 @@ public class SystemBootstrap {
         private static final Set<String> loaded_ = new HashSet<String>();
         private static Path libraryPath_;
         private static boolean runtimeResolveAttempted_ = false;
+        private static final String RUNTIME_MARKER = ".jcef-runtime-complete";
         private static RuntimeDownloadProvider downloadProvider_ =
                 new DefaultRuntimeDownloadProvider();
         private static DownloadProgressListener progressListener_;
@@ -102,7 +104,16 @@ public class SystemBootstrap {
             String key = library.toAbsolutePath().normalize().toString();
             if (loaded_.contains(key)) return true;
 
-            System.load(key);
+            try {
+                System.load(key);
+            } catch (UnsatisfiedLinkError e) {
+                // Orion fork addition. See MODIFICATIONS.md.
+                // A runtime that cannot be loaded is unusable; drop the
+                // completion marker so the next run downloads it again instead
+                // of failing forever on a damaged cache.
+                invalidateRuntimeCache(root);
+                throw e;
+            }
             loaded_.add(key);
             return true;
         }
@@ -179,7 +190,7 @@ public class SystemBootstrap {
 
             Path cache = cacheRoot();
             Path root = cache.resolve(platform);
-            Path marker = root.resolve(".jcef-runtime-complete");
+            Path marker = root.resolve(RUNTIME_MARKER);
             if (Files.isRegularFile(marker) && containsRuntimeLibrary(root)) {
                 libraryPath_ = macLibraryPath(root);
                 return libraryPath_;
@@ -223,26 +234,52 @@ public class SystemBootstrap {
                 }
             }
             if (total == 0) reportProgress(platform, url, read, total);
+
+            // Orion fork addition. See MODIFICATIONS.md.
+            // A server that closes the connection early ends the read loop
+            // without an exception, which used to leave a truncated zip behind.
+            if (total > 0 && read != total) {
+                throw new IOException("Incomplete download from " + url + ": got " + read
+                        + " of " + total + " bytes");
+            }
+        }
+
+        private static void invalidateRuntimeCache(Path root) {
+            try {
+                Files.deleteIfExists(root.resolve(RUNTIME_MARKER));
+            } catch (IOException ignored) {
+            }
         }
 
         private static void extractZip(Path zipPath, Path root) throws IOException {
             Files.createDirectories(root);
-            try (ZipInputStream zip = new ZipInputStream(
-                         new BufferedInputStream(Files.newInputStream(zipPath)))) {
-                ZipEntry entry;
-                while ((entry = zip.getNextEntry()) != null) {
+            // Orion fork addition. See MODIFICATIONS.md.
+            // ZipFile reads the central directory, so a truncated archive fails
+            // here instead of silently producing short files, and every entry
+            // size is known up front and verified after extraction.
+            try (ZipFile zip = new ZipFile(zipPath.toFile())) {
+                Enumeration<? extends ZipEntry> entries = zip.entries();
+                while (entries.hasMoreElements()) {
+                    ZipEntry entry = entries.nextElement();
                     Path target = root.resolve(entry.getName()).normalize();
                     if (!target.startsWith(root)) {
                         throw new IOException("Invalid runtime zip entry: " + entry.getName());
                     }
                     if (entry.isDirectory()) {
                         Files.createDirectories(target);
-                    } else {
-                        Files.createDirectories(target.getParent());
-                        Files.copy(zip, target, StandardCopyOption.REPLACE_EXISTING);
-                        applyPermissions(target);
+                        continue;
                     }
-                    zip.closeEntry();
+                    Files.createDirectories(target.getParent());
+                    try (InputStream in = zip.getInputStream(entry)) {
+                        Files.copy(in, target, StandardCopyOption.REPLACE_EXISTING);
+                    }
+                    long expected = entry.getSize();
+                    long actual = Files.size(target);
+                    if (expected >= 0 && expected != actual) {
+                        throw new IOException("Truncated runtime entry " + entry.getName()
+                                + ": got " + actual + " of " + expected + " bytes");
+                    }
+                    applyPermissions(target);
                 }
             }
             if (!containsRuntimeLibrary(root)) {

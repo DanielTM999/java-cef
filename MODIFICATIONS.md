@@ -141,6 +141,22 @@ key was pressed in the last 3 seconds. Set `-Djcef.orion.linux.pointer-focus=fal
 to disable the whole mechanism. Windows, macOS and both off-screen modes are
 unaffected.
 
+### Runtime download integrity
+
+A server that closes the connection early ends the download read loop without
+raising, and `ZipInputStream` extracts a truncated archive without complaining,
+so a partial download used to produce short files, still get the
+`.jcef-runtime-complete` marker written, and poison the cache permanently: every
+later run reused it and failed with `UnsatisfiedLinkError: %1 is not a valid
+Win32 application`.
+
+The downloader now compares the number of bytes read against `Content-Length`
+and fails on a short read; extraction went from `ZipInputStream` to `ZipFile`, so
+a truncated archive is rejected up front by the central directory and every
+entry's extracted size is checked against the size recorded in the zip. If a
+runtime library still fails to load, the completion marker is deleted so the next
+run downloads the runtime again instead of failing forever.
+
 ### Supported platforms for `DEDICATED_CEF_THREAD`
 
 | Platform | Behavior |
@@ -184,7 +200,7 @@ unaffected.
 |---|---|
 | `java/org/cef/CefSettings.java` | Added `CefInitializationMode` enum + `initialization_mode` field. |
 | `java/org/cef/CefApp.java` | Mode resolution; dedicated owner-thread dispatch for pre-init / init / message-loop / shutdown; `initializeAsync()` / `createClientAsync()`; one-shot native-init guard; bundled-native library path lookup; logging. Legacy EDT path preserved. |
-| `java/org/cef/SystemBootstrap.java` | Default loader can extract embedded per-OS native runtime resources, download missing runtime zips from a configurable provider, report download progress, and load native libraries from the extracted cache. |
+| `java/org/cef/SystemBootstrap.java` | Default loader can extract embedded per-OS native runtime resources, download missing runtime zips from a configurable provider, report download progress, and load native libraries from the extracted cache; verifies download length and per-entry extracted sizes, and drops the cache marker when a runtime library fails to load. |
 | `java/org/cef/browser/CefBrowserFactory.java` | Added `create(...)` overload taking a `CefRendering` mode; legacy boolean overload delegates to it. |
 | `java/org/cef/CefClient.java` | Added `createBrowser(...)` overloads taking a `CefRendering` mode. |
 | `java/org/cef/browser/CefBrowserWr.java` | `setIgnoreRepaint(true)` on the hosting `Canvas` to cut windowed-rendering flicker; pointer-driven keyboard focus for windowed browsers on Linux/X11. |
