@@ -67,6 +67,8 @@ jobs:
 
       - name: Upload Java API artifacts
         uses: actions/upload-artifact@v4
+        env:
+          NODE_OPTIONS: --dns-result-order=ipv4first
         with:
           name: jcef-orion-java-api
           path: dist/
@@ -202,6 +204,8 @@ jobs:
 
       - name: Upload redistributable
         uses: actions/upload-artifact@v4
+        env:
+          NODE_OPTIONS: --dns-result-order=ipv4first
         with:
           name: jcef-runtime-${{ matrix.platform }}
           path: dist-archives/jcef-runtime-${{ matrix.platform }}-${{ needs.build-java.outputs.version }}.zip
@@ -225,6 +229,8 @@ jobs:
 
       - name: Download temporary artifacts
         uses: actions/download-artifact@v4
+        env:
+          NODE_OPTIONS: --dns-result-order=ipv4first
         with:
           path: universal-input
 
@@ -267,6 +273,8 @@ jobs:
 
       - name: Upload universal jar artifacts
         uses: actions/upload-artifact@v4
+        env:
+          NODE_OPTIONS: --dns-result-order=ipv4first
         with:
           name: jcef-orion-embedded
           path: dist/
@@ -286,6 +294,8 @@ jobs:
     steps:
       - name: Download temporary artifacts
         uses: actions/download-artifact@v4
+        env:
+          NODE_OPTIONS: --dns-result-order=ipv4first
         with:
           path: release-assets
 
@@ -322,7 +332,7 @@ jobs:
       - build-native
       - build-universal
       - release
-    if: always()
+    if: success()
     runs-on: ubuntu-latest
     permissions:
       actions: write
