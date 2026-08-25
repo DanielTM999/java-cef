@@ -88,6 +88,25 @@ Requires `CefSettings.windowless_rendering_enabled = true` (as any OSR mode
 does). The legacy `createBrowser(url, boolean isOffscreenRendered, ...)`
 overloads map to `WINDOWED` / `OFFSCREEN` and are unchanged.
 
+### Windowed-rendering flicker mitigation (Windows)
+
+`CefRendering.WINDOWED` parents a native Chromium child window inside the AWT
+hierarchy, so the surrounding AWT windows repaint the area the child window
+occupies before Chromium gets to repaint it. That is visible as flicker
+whenever a sibling Swing component relayouts. Two mitigations were added for
+embedders that prefer the native surface over `OFFSCREEN_BUFFERED`:
+
+- `CefBrowserWr` marks its `Canvas` with `setIgnoreRepaint(true)`. The canvas
+  exists only to lend its window handle to the browser, so every AWT paint of
+  it is immediately overdrawn by the child window.
+- `native/CefBrowser_N.cpp` adds `WS_CLIPCHILDREN` to the parent window and its
+  ancestors up to the top-level window when a windowed browser is created, so
+  those windows stop painting over the browser's child window. This is the only
+  native change in the fork; it is Windows-only and scoped to the windowed
+  creation path.
+
+Neither affects `OFFSCREEN` or `OFFSCREEN_BUFFERED`.
+
 ### Supported platforms for `DEDICATED_CEF_THREAD`
 
 | Platform | Behavior |
@@ -134,6 +153,8 @@ overloads map to `WINDOWED` / `OFFSCREEN` and are unchanged.
 | `java/org/cef/SystemBootstrap.java` | Default loader can extract embedded per-OS native runtime resources, download missing runtime zips from a configurable provider, report download progress, and load native libraries from the extracted cache. |
 | `java/org/cef/browser/CefBrowserFactory.java` | Added `create(...)` overload taking a `CefRendering` mode; legacy boolean overload delegates to it. |
 | `java/org/cef/CefClient.java` | Added `createBrowser(...)` overloads taking a `CefRendering` mode. |
+| `java/org/cef/browser/CefBrowserWr.java` | `setIgnoreRepaint(true)` on the hosting `Canvas` to cut windowed-rendering flicker. |
+| `native/CefBrowser_N.cpp` | Windows only: sets `WS_CLIPCHILDREN` on the AWT parent window chain when creating a windowed browser. |
 | `tools/compile.sh`, `tools/compile.bat` | Also compile the new `tests/orion` package; Windows compilation now uses an argument file so `javac` receives expanded source paths reliably. |
 | `tools/make_jar.bat` | Packages class directories with `jar -C` instead of relying on Windows wildcard expansion. |
 | `CMakeLists.txt` | Added `JCEF_DOWNLOAD_CLANG_FORMAT=OFF` option so CI can avoid the Chromium `gsutil` / Python `six.moves` failure while configuring native builds. |
@@ -142,7 +163,9 @@ overloads map to `WINDOWED` / `OFFSCREEN` and are unchanged.
 ## Not modified
 
 - `LICENSE.txt` and all copyright headers.
-- Native C++ (`native/context.cpp`, `native/CefApp.cpp`, etc.).
+- Native C++ except for the windowed-rendering `WS_CLIPCHILDREN` change in
+  `native/CefBrowser_N.cpp` (`native/context.cpp`, `native/CefApp.cpp`, etc. are
+  untouched).
 - Upstream behavior when `initialization_mode` is left at its default.
 
 ## Distribution model

@@ -974,6 +974,23 @@ void create(std::shared_ptr<JNIObjectsForCreate> objs,
     CefWindowHandle parent = TempWindow::GetWindowHandle();
     if (objs->canvas != nullptr) {
       parent = GetHwndOfCanvas(objs->canvas, env);
+      // Orion fork addition. See MODIFICATIONS.md.
+      // Without WS_CLIPCHILDREN the AWT parent windows paint over the area
+      // occupied by the browser's child window before Chromium repaints it,
+      // which shows up as flicker when sibling Swing components relayout.
+      for (HWND ancestor = parent; ancestor != nullptr;) {
+        LONG_PTR style = GetWindowLongPtr(ancestor, GWL_STYLE);
+        if (style == 0) {
+          break;
+        }
+        if ((style & WS_CLIPCHILDREN) == 0) {
+          SetWindowLongPtr(ancestor, GWL_STYLE, style | WS_CLIPCHILDREN);
+        }
+        if ((style & WS_CHILD) == 0) {
+          break;
+        }
+        ancestor = GetParent(ancestor);
+      }
     } else {
       // Do not activate hidden browser windows on creation.
       windowInfo.ex_style |= WS_EX_NOACTIVATE;

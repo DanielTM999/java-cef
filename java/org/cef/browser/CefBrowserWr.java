@@ -253,6 +253,12 @@ class CefBrowserWr extends CefBrowser_N {
         // technique is used on Linux as well.
         if (OS.isWindows() || OS.isLinux()) {
             canvas_ = new Canvas();
+            // Orion fork addition. See MODIFICATIONS.md.
+            // The canvas only exists to lend its native window handle to the
+            // browser. Every AWT paint of it is overdrawn by the child window
+            // right afterwards, which is visible as flicker whenever a sibling
+            // Swing component triggers a relayout.
+            canvas_.setIgnoreRepaint(true);
             ((JPanel) component_).add(canvas_, BorderLayout.CENTER);
         }
 
