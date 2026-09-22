@@ -245,12 +245,16 @@ class CefBrowserOsrBuffered extends CefBrowser_N implements CefRenderHandler, Ce
     @Override
     public void onPaint(CefBrowser browser, boolean popup, Rectangle[] dirtyRects,
             ByteBuffer buffer, int width, int height) {
+        long start = PaintStats.ENABLED ? System.nanoTime() : 0L;
         synchronized (paintLock_) {
             if (popup) {
                 storePopup(dirtyRects, buffer, width, height);
             } else {
                 storeMain(dirtyRects, buffer, width, height);
             }
+        }
+        if (PaintStats.ENABLED) {
+            PaintStats.recordCopy(System.nanoTime() - start);
         }
         repaintCanvas(popup ? null : dirtyRects);
 
@@ -263,11 +267,19 @@ class CefBrowserOsrBuffered extends CefBrowser_N implements CefRenderHandler, Ce
         }
     }
 
+    /**
+     * CEF delivers BGRA bytes, i.e. little-endian 0xAARRGGBB ints. An opaque
+     * page is stored as TYPE_INT_RGB (alpha ignored) so Java2D can use a plain
+     * opaque blit instead of a per-pixel alpha blend on every frame.
+     */
+    private int imageType() {
+        return isTransparent_ ? BufferedImage.TYPE_INT_ARGB_PRE : BufferedImage.TYPE_INT_RGB;
+    }
+
     private void storeMain(Rectangle[] dirtyRects, ByteBuffer buffer, int width, int height) {
         boolean resized = width != mainWidth_ || height != mainHeight_ || mainImage_ == null;
         if (resized) {
-            mainImage_ = new BufferedImage(width, height,
-                    isTransparent_ ? BufferedImage.TYPE_INT_ARGB_PRE : BufferedImage.TYPE_INT_ARGB);
+            mainImage_ = new BufferedImage(width, height, imageType());
             mainData_ = ((DataBufferInt) mainImage_.getRaster().getDataBuffer()).getData();
             mainWidth_ = width;
             mainHeight_ = height;
@@ -283,8 +295,7 @@ class CefBrowserOsrBuffered extends CefBrowser_N implements CefRenderHandler, Ce
     private void storePopup(Rectangle[] dirtyRects, ByteBuffer buffer, int width, int height) {
         boolean resized = width != popupWidth_ || height != popupHeight_ || popupImage_ == null;
         if (resized) {
-            popupImage_ = new BufferedImage(width, height,
-                    isTransparent_ ? BufferedImage.TYPE_INT_ARGB_PRE : BufferedImage.TYPE_INT_ARGB);
+            popupImage_ = new BufferedImage(width, height, imageType());
             popupData_ = ((DataBufferInt) popupImage_.getRaster().getDataBuffer()).getData();
             popupWidth_ = width;
             popupHeight_ = height;
@@ -690,22 +701,46 @@ class CefBrowserOsrBuffered extends CefBrowser_N implements CefRenderHandler, Ce
 
         @Override
         protected void paintComponent(Graphics g) {
+            long start = PaintStats.ENABLED ? System.nanoTime() : 0L;
             Graphics2D g2 = (Graphics2D) g.create();
             try {
                 g2.setColor(getBackground());
-                g2.fillRect(0, 0, getWidth(), getHeight());
-
                 synchronized (paintLock_) {
                     if (mainImage_ == null) {
+                        g2.fillRect(0, 0, getWidth(), getHeight());
                         return;
                     }
                     double sf = scaleFactor_ <= 0 ? 1.0 : scaleFactor_;
-                    if (sf == 1.0) {
+                    AffineTransform t = g2.getTransform();
+                    boolean deviceScale = t.getShearX() == 0 && t.getShearY() == 0
+                            && Math.abs(t.getScaleX() - sf) < 1e-3
+                            && Math.abs(t.getScaleY() - sf) < 1e-3;
+                    if (deviceScale) {
+                        // The frame is already in device pixels. Blit it 1:1 with a
+                        // snapped, translation-only transform: scale(sf) combined
+                        // with scale(1/sf) is rarely exactly 1.0 in floating point,
+                        // which sends Java2D down the slow resampling path.
+                        if (sf != 1.0) {
+                            g2.setTransform(AffineTransform.getTranslateInstance(
+                                    Math.round(t.getTranslateX()), Math.round(t.getTranslateY())));
+                        }
+                        int viewW = (int) Math.ceil(getWidth() * sf);
+                        int viewH = (int) Math.ceil(getHeight() * sf);
+                        int imgW = mainImage_.getWidth();
+                        int imgH = mainImage_.getHeight();
+                        // Only clear what the frame does not cover.
+                        if (imgW < viewW) g2.fillRect(imgW, 0, viewW - imgW, viewH);
+                        if (imgH < viewH) g2.fillRect(0, imgH, Math.min(imgW, viewW), viewH - imgH);
                         g2.drawImage(mainImage_, 0, 0, null);
                         if (popupVisible_ && popupImage_ != null && popupRect_.width > 0) {
-                            g2.drawImage(popupImage_, popupRect_.x, popupRect_.y, null);
+                            int px = (int) Math.round(popupRect_.x * sf);
+                            int py = (int) Math.round(popupRect_.y * sf);
+                            g2.drawImage(popupImage_, px, py, null);
                         }
                     } else {
+                        // Unusual target (printing, custom transforms): fall back to
+                        // resampling the frame into logical coordinates.
+                        g2.fillRect(0, 0, getWidth(), getHeight());
                         AffineTransform saved = g2.getTransform();
                         g2.setRenderingHint(RenderingHints.KEY_INTERPOLATION,
                                 RenderingHints.VALUE_INTERPOLATION_BILINEAR);
@@ -721,7 +756,60 @@ class CefBrowserOsrBuffered extends CefBrowser_N implements CefRenderHandler, Ce
                 }
             } finally {
                 g2.dispose();
+                if (PaintStats.ENABLED) {
+                    PaintStats.recordPaint(System.nanoTime() - start);
+                }
             }
+        }
+    }
+
+    /**
+     * Opt-in frame timing ({@code -Djcef.orion.osr.stats=true}). Logs, every
+     * 5 seconds, how many frames CEF delivered, how long copying them took on
+     * the CEF thread and how long Swing spent painting them on the EDT.
+     */
+    private static final class PaintStats {
+        static final boolean ENABLED = Boolean.getBoolean("jcef.orion.osr.stats");
+        private static final long WINDOW_NANOS = 5_000_000_000L;
+
+        private static long windowStart = System.nanoTime();
+        private static int frames;
+        private static long copyNanos;
+        private static int paints;
+        private static long paintNanos;
+        private static long maxPaintNanos;
+
+        static synchronized void recordCopy(long nanos) {
+            frames++;
+            copyNanos += nanos;
+            flushIfDue();
+        }
+
+        static synchronized void recordPaint(long nanos) {
+            paints++;
+            paintNanos += nanos;
+            maxPaintNanos = Math.max(maxPaintNanos, nanos);
+            flushIfDue();
+        }
+
+        private static void flushIfDue() {
+            long now = System.nanoTime();
+            long elapsed = now - windowStart;
+            if (elapsed < WINDOW_NANOS) {
+                return;
+            }
+            double seconds = elapsed / 1e9;
+            System.out.printf(
+                    "[JCEF OSR] onPaint %.1f fps (copy avg %.2f ms) | paint %.1f/s (avg %.2f ms, max %.2f ms)%n",
+                    frames / seconds, frames == 0 ? 0 : copyNanos / 1e6 / frames,
+                    paints / seconds, paints == 0 ? 0 : paintNanos / 1e6 / paints,
+                    maxPaintNanos / 1e6);
+            windowStart = now;
+            frames = 0;
+            copyNanos = 0;
+            paints = 0;
+            paintNanos = 0;
+            maxPaintNanos = 0;
         }
     }
 }
