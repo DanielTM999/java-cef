@@ -11,8 +11,8 @@ Chromium / third-party notices are preserved unchanged.
 |---|---|
 | Fork name | JCEF (Orion fork) |
 | Original project | JCEF - https://github.com/chromiumembedded/java-cef |
-| Base JCEF commit (upstream) | `6d3e8ca` |
-| CEF version | `146.0.10+g8219561+chromium-146.0.7680.179` (see `CMakeLists.txt`) |
+| Base JCEF commit (upstream) | `17e805a` (merged 2026-09-22; previously `6d3e8ca`) |
+| CEF version | `152.0.6+g708dc14+chromium-152.0.7977.83` (see `CMakeLists.txt`) |
 | First modification date | 2026-07-18 |
 | Purpose | Allow the global CEF context lifecycle to run on a dedicated thread so that native Chromium initialization does not freeze the Swing EDT. |
 

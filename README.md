@@ -37,7 +37,7 @@ Quick start:
 
 ```sh
 tools/compile.sh linux64
-scripts/package-portable.sh 146.0.0 dist   # portable jar + sources + POM + checksums
+scripts/package-portable.sh 1.1.0 dist   # portable jar + sources + POM + checksums
 ```
 
 ```java

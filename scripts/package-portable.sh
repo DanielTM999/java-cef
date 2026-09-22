@@ -19,7 +19,7 @@
 # build the primary offline embedded jar.
 #
 #   tools/compile.sh linux64
-#   scripts/package-portable.sh 146.0.0 dist
+#   scripts/package-portable.sh 1.1.0 dist
 #
 # Usage: scripts/package-portable.sh <version> [output-dir]
 
