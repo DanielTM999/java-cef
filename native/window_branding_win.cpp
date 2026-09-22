@@ -25,6 +25,7 @@
 #include "include/cef_task.h"
 #include "include/wrapper/cef_closure_task.h"
 
+#include "jni_scoped_helpers.h"
 #include "jni_util.h"
 
 #pragma comment(lib, "ole32.lib")
