@@ -9,6 +9,18 @@ extern "C" {
 #endif
 /*
  * Class:     org_cef_CefApp
+ * Method:    N_BrandExecutable
+ * Signature: (Ljava/lang/String;Ljava/lang/String;Ljava/lang/String;Ljava/lang/String;)Z
+ */
+JNIEXPORT jboolean JNICALL Java_org_cef_CefApp_N_1BrandExecutable(JNIEnv*,
+                                                                  jclass,
+                                                                  jstring,
+                                                                  jstring,
+                                                                  jstring,
+                                                                  jstring);
+
+/*
+ * Class:     org_cef_CefApp
  * Method:    N_Startup
  * Signature: (Ljava/lang/String;)Z
  */

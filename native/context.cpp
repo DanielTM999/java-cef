@@ -8,6 +8,7 @@
 
 #include "client_app.h"
 #include "jni_util.h"
+#include "window_branding.h"
 
 #if defined(OS_MACOSX)
 #include "util_mac.h"
@@ -232,6 +233,10 @@ bool Context::Initialize(JNIEnv* env,
   // DoMessageLoopWork.
   settings.external_message_pump = external_message_pump_;
 
+  // Orion fork: embedder branding (icon / AppUserModelID) for the native
+  // windows Chromium creates itself. No-op outside Windows.
+  window_branding::Configure(env, jsettings);
+
   CefRefPtr<ClientApp> client_app(
       new ClientApp(CefString(&settings.cache_path), env, appHandler));
   bool res = false;
@@ -249,6 +254,7 @@ bool Context::Initialize(JNIEnv* env,
 void Context::OnContextInitialized() {
   REQUIRE_UI_THREAD();
   temp_window_.reset(new TempWindow());
+  window_branding::ReapplyProcessIdentity();
 }
 
 void Context::DoMessageLoopWork() {

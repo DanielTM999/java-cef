@@ -14,6 +14,9 @@ import java.awt.event.ActionEvent;
 import java.awt.event.ActionListener;
 import java.io.File;
 import java.io.FilenameFilter;
+import java.io.IOException;
+import java.nio.charset.StandardCharsets;
+import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.Paths;
 import java.util.HashSet;
@@ -675,7 +678,8 @@ public class CefApp extends CefAppHandlerAdapter {
         } else if (OS.isWindows()) {
             if (settings.browser_subprocess_path == null) {
                 Path path = Paths.get(library_path, "jcef_helper.exe");
-                settings.browser_subprocess_path = path.normalize().toAbsolutePath().toString();
+                path = resolveBrandedHelper(path.normalize().toAbsolutePath(), settings);
+                settings.browser_subprocess_path = path.toString();
             }
         } else if (OS.isLinux()) {
             if (settings.browser_subprocess_path == null) {
@@ -693,6 +697,57 @@ public class CefApp extends CefAppHandlerAdapter {
         }
 
         return N_Initialize(appHandler_, settings);
+    }
+
+    /**
+     * Orion fork: returns a copy of the Windows helper executable carrying the
+     * embedder's icon and name (see {@link CefSettings#helper_executable_name}),
+     * creating or refreshing it when needed, or {@code helper} itself when no
+     * branding is configured or the copy cannot be written.
+     */
+    private static Path resolveBrandedHelper(Path helper, CefSettings settings) {
+        String name = settings.helper_executable_name;
+        String icon = settings.app_icon_path == null ? "" : settings.app_icon_path;
+        String description = settings.app_display_name == null ? "" : settings.app_display_name;
+        if (name == null || name.trim().isEmpty() || (icon.isEmpty() && description.isEmpty())) {
+            return helper;
+        }
+        if (!name.matches("[A-Za-z0-9._ -]+") || !Files.isRegularFile(helper)) {
+            logInit("Helper branding skipped: invalid name '" + name + "' or missing " + helper);
+            return helper;
+        }
+        Path target = helper.resolveSibling(name + ".exe");
+        Path stamp = helper.resolveSibling(name + ".exe.brand");
+        try {
+            String expected = brandStamp(helper, icon, description);
+            if (Files.isRegularFile(target) && Files.isRegularFile(stamp)
+                    && expected.equals(new String(
+                            Files.readAllBytes(stamp), StandardCharsets.UTF_8))) {
+                return target;
+            }
+            if (N_BrandExecutable(helper.toString(), target.toString(), icon, description)) {
+                Files.write(stamp, expected.getBytes(StandardCharsets.UTF_8));
+                return target;
+            }
+            logInit("Helper branding failed for " + target + "; using " + helper);
+        } catch (IOException | UnsatisfiedLinkError e) {
+            logInit("Helper branding failed for " + target + ": " + e);
+        }
+        return helper;
+    }
+
+    private static String brandStamp(Path helper, String icon, String description)
+            throws IOException {
+        StringBuilder stamp = new StringBuilder("v1\n")
+                .append(Files.size(helper)).append(' ')
+                .append(Files.getLastModifiedTime(helper).toMillis()).append('\n')
+                .append(icon).append('\n');
+        if (!icon.isEmpty()) {
+            Path iconPath = Paths.get(icon);
+            stamp.append(Files.size(iconPath)).append(' ')
+                    .append(Files.getLastModifiedTime(iconPath).toMillis()).append('\n');
+        }
+        return stamp.append(description).toString();
     }
 
     /**
@@ -927,6 +982,8 @@ public class CefApp extends CefAppHandlerAdapter {
     private final native boolean N_Initialize(CefAppHandler appHandler, CefSettings settings);
     private final native void N_Shutdown();
     private final native void N_DoMessageLoopWork();
+    private static native boolean N_BrandExecutable(
+            String source, String target, String iconPath, String description);
     private final native CefVersion N_GetVersion();
     private final native boolean N_RegisterSchemeHandlerFactory(
             String schemeName, String domainName, CefSchemeHandlerFactory factory);
