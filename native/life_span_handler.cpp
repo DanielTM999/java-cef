@@ -7,6 +7,7 @@
 #include "client_handler.h"
 #include "jni_util.h"
 #include "util.h"
+#include "window_branding.h"
 
 LifeSpanHandler::LifeSpanHandler(JNIEnv* env, jobject handler)
     : handle_(env, handler) {}
@@ -51,6 +52,11 @@ bool LifeSpanHandler::OnBeforePopup(CefRefPtr<CefBrowser> browser,
 }
 
 void LifeSpanHandler::OnAfterCreated(CefRefPtr<CefBrowser> browser) {
+  // Orion fork: replace Chromium's icon/taskbar identity on windows Chromium
+  // owns (DevTools, windowed popups). Runs before the early return below
+  // because DevTools browsers have no pending Java browser object.
+  window_branding::ApplyToBrowser(browser);
+
   ScopedJNIEnv env;
   if (!env || jbrowsers_.empty())
     return;

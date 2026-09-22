@@ -14,6 +14,7 @@
 #include "jni_util.h"
 #include "scheme_handler_factory.h"
 #include "util.h"
+#include "window_branding.h"
 
 #if defined(OS_LINUX)
 #include <X11/Xlib.h>
@@ -115,4 +116,24 @@ Java_org_cef_CefApp_N_1Startup(JNIEnv* env,
   Context::Create();
 #endif  // defined(OS_MACOSX)
   return JNI_TRUE;
+}
+
+JNIEXPORT jboolean JNICALL
+Java_org_cef_CefApp_N_1BrandExecutable(JNIEnv* env,
+                                       jclass,
+                                       jstring jsource,
+                                       jstring jtarget,
+                                       jstring jiconPath,
+                                       jstring jdescription) {
+#if defined(OS_WIN)
+  return window_branding::BrandExecutable(
+             GetJNIString(env, jsource).ToWString(),
+             GetJNIString(env, jtarget).ToWString(),
+             GetJNIString(env, jiconPath).ToWString(),
+             GetJNIString(env, jdescription).ToWString())
+             ? JNI_TRUE
+             : JNI_FALSE;
+#else
+  return JNI_FALSE;
+#endif
 }

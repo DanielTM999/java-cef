@@ -305,6 +305,43 @@ public class CefSettings {
      */
     public CefInitializationMode initialization_mode = CefInitializationMode.LEGACY_EDT;
 
+    /**
+     * Icon (a Windows {@code .ico} file) used for the native windows Chromium
+     * creates on its own, such as DevTools, and for the branded helper
+     * executable (see {@link #helper_executable_name}). When unset those
+     * windows get the generic application icon instead of Chromium's. Windows
+     * only; Orion fork addition.
+     */
+    public String app_icon_path = null;
+
+    /**
+     * Windows AppUserModelID of the embedding application, e.g.
+     * {@code "Company.Product"}. Applied to the process and to Chromium-owned
+     * windows so that DevTools groups with the embedder on the taskbar and
+     * Chromium cannot take over the embedder's taskbar identity. When unset,
+     * an AppUserModelID set by Chromium is replaced by a neutral one. Windows
+     * only; Orion fork addition.
+     */
+    public String app_user_model_id = null;
+
+    /**
+     * Display name of the embedding application. Used as the FileDescription
+     * of the branded helper executable, which is what the Task Manager shows
+     * for the browser sub-processes. Windows only; Orion fork addition.
+     */
+    public String app_display_name = null;
+
+    /**
+     * File name (without {@code .exe}) of a branded copy of the browser
+     * sub-process executable. When set together with {@link #app_icon_path}
+     * or {@link #app_display_name}, and {@link #browser_subprocess_path} is
+     * not set, JCEF creates {@code <name>.exe} next to the default helper with
+     * that icon and description and launches the sub-processes from it. Falls
+     * back to the default helper if the copy cannot be written. Windows only;
+     * Orion fork addition.
+     */
+    public String helper_executable_name = null;
+
     public CefSettings() {}
 
     @Override
@@ -331,6 +368,10 @@ public class CefSettings {
         tmp.cookieable_schemes_list = cookieable_schemes_list;
         tmp.cookieable_schemes_exclude_defaults = cookieable_schemes_exclude_defaults;
         tmp.initialization_mode = initialization_mode;
+        tmp.app_icon_path = app_icon_path;
+        tmp.app_user_model_id = app_user_model_id;
+        tmp.app_display_name = app_display_name;
+        tmp.helper_executable_name = helper_executable_name;
         return tmp;
     }
 }

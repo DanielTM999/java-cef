@@ -11,8 +11,8 @@ Chromium / third-party notices are preserved unchanged.
 |---|---|
 | Fork name | JCEF (Orion fork) |
 | Original project | JCEF - https://github.com/chromiumembedded/java-cef |
-| Base JCEF commit (upstream) | `6d3e8ca` |
-| CEF version | `146.0.10+g8219561+chromium-146.0.7680.179` (see `CMakeLists.txt`) |
+| Base JCEF commit (upstream) | `17e805a` (merged 2026-09-22; previously `6d3e8ca`) |
+| CEF version | `152.0.6+g708dc14+chromium-152.0.7977.83` (see `CMakeLists.txt`) |
 | First modification date | 2026-07-18 |
 | Purpose | Allow the global CEF context lifecycle to run on a dedicated thread so that native Chromium initialization does not freeze the Swing EDT. |
 
@@ -141,6 +141,50 @@ key was pressed in the last 3 seconds. Set `-Djcef.orion.linux.pointer-focus=fal
 to disable the whole mechanism. Windows, macOS and both off-screen modes are
 unaffected.
 
+### Buffered OSR paint performance
+
+`CefBrowserOsrBuffered` used to spend most of the EDT time per frame in Java2D
+slow paths. Measured on Windows with an animated page (EDT paint time per
+frame, same runtime):
+
+| Scale | Before | After |
+|---|---|---|
+| 100% | 6.8 ms (max 13 ms) | 2.1 ms (max 4 ms) |
+| 150% | 37 ms (max 45 ms, frames dropped) | 5.9 ms (max 11 ms) |
+
+- Opaque browsers store frames as `TYPE_INT_RGB` instead of `TYPE_INT_ARGB`,
+  so Java2D blits instead of alpha blending every pixel.
+- On scaled displays the frame (already in device pixels) is painted with a
+  snapped, translation-only transform. `scale(sf)` combined with
+  `scale(1/sf)` is rarely exactly 1.0 in floating point, which forced Java2D to
+  resample the whole frame on every paint.
+- Only the area not covered by the frame is cleared.
+- `-Djcef.orion.osr.stats=true` logs `onPaint` fps and copy/paint timings every
+  5 seconds.
+
+### Embedder branding (Windows)
+
+Chromium creates some native windows on its own (DevTools) and may replace the
+process AppUserModelID with its own, so the embedder showed Chromium's icon on
+those windows, on its own taskbar group and, through `jcef_helper.exe`, in the
+Task Manager. New `CefSettings` fields let the embedder choose; nothing set
+means a generic icon, never Chromium's:
+
+| Field | Effect |
+|---|---|
+| `app_icon_path` | `.ico` for Chromium-owned windows and the branded helper. |
+| `app_user_model_id` | Process AppUserModelID, re-applied after Chromium initializes and set on Chromium-owned windows so DevTools groups with the embedder. |
+| `app_display_name` | FileDescription/ProductName of the branded helper (Task Manager name). |
+| `helper_executable_name` | Creates `<name>.exe` next to `jcef_helper.exe` with that icon/description and launches sub-processes from it (only when `browser_subprocess_path` is unset). Refreshed when the helper, icon or description change; falls back to `jcef_helper.exe` if it cannot be written. |
+
+Native side: `native/window_branding.h` / `native/window_branding_win.cpp`
+(`WM_SETICON` + window property store on Chromium-owned top-level windows,
+re-applied after 250 ms and 1.5 s; `UpdateResource` based helper branding),
+hooked from `context.cpp` (`Configure` before `CefInitialize`,
+`ReapplyProcessIdentity` in `OnContextInitialized`), `life_span_handler.cpp`
+(`OnAfterCreated`) and the new static `CefApp.N_BrandExecutable`. AWT windows
+(`SunAwt*` classes) are never touched. Linux and macOS are no-ops.
+
 ### Runtime download integrity
 
 A server that closes the connection early ends the download read loop without
@@ -187,6 +231,7 @@ run downloads the runtime again instead of failing forever.
 | `java/tests/junittests/CefMainThreadTest.java` | Pure-Java unit tests for the owner thread. |
 | `java/tests/junittests/CefInitializationModeTest.java` | Pure-Java unit tests for mode resolution / platform fallback. |
 | `java/tests/orion/OrionAsyncInitExample.java` | Runnable Swing demo comparing `LEGACY_EDT` vs `DEDICATED_CEF_THREAD`. |
+| `native/window_branding.h`, `native/window_branding_win.cpp` | Embedder icon / AppUserModelID for Chromium-owned windows and helper executable branding (Windows). |
 | `MODIFICATIONS.md` | This file. |
 | `docs/BUILDING.md` | Build/packaging/workflow guide and Orion integration notes. |
 | `scripts/package-portable.sh` | Build the Java API jar with shaded JOGL/GlueGen dependencies, sources jar, POM and `SHA256SUMS.txt`. |
@@ -198,8 +243,10 @@ run downloads the runtime again instead of failing forever.
 
 | File | Change |
 |---|---|
-| `java/org/cef/CefSettings.java` | Added `CefInitializationMode` enum + `initialization_mode` field. |
-| `java/org/cef/CefApp.java` | Mode resolution; dedicated owner-thread dispatch for pre-init / init / message-loop / shutdown; `initializeAsync()` / `createClientAsync()`; one-shot native-init guard; bundled-native library path lookup; logging. Legacy EDT path preserved. |
+| `java/org/cef/CefSettings.java` | Added `CefInitializationMode` enum + `initialization_mode` field; `app_icon_path`, `app_user_model_id`, `app_display_name`, `helper_executable_name` branding fields. |
+| `java/org/cef/browser/CefBrowserOsrBuffered.java` | Opaque `TYPE_INT_RGB` frames, device-space 1:1 blit on scaled displays, opt-in paint stats. |
+| `native/context.cpp`, `native/life_span_handler.cpp`, `native/CefApp.{cpp,h}`, `native/CMakeLists.txt` | Branding hooks and `N_BrandExecutable` (see "Embedder branding"). |
+| `java/org/cef/CefApp.java` | Mode resolution; dedicated owner-thread dispatch for pre-init / init / message-loop / shutdown; `initializeAsync()` / `createClientAsync()`; one-shot native-init guard; bundled-native library path lookup; logging; branded Windows helper resolution. Legacy EDT path preserved. |
 | `java/org/cef/SystemBootstrap.java` | Default loader can extract embedded per-OS native runtime resources, download missing runtime zips from a configurable provider, report download progress, and load native libraries from the extracted cache; verifies download length and per-entry extracted sizes, and drops the cache marker when a runtime library fails to load. |
 | `java/org/cef/browser/CefBrowserFactory.java` | Added `create(...)` overload taking a `CefRendering` mode; legacy boolean overload delegates to it. |
 | `java/org/cef/CefClient.java` | Added `createBrowser(...)` overloads taking a `CefRendering` mode. |
@@ -214,8 +261,9 @@ run downloads the runtime again instead of failing forever.
 
 - `LICENSE.txt` and all copyright headers.
 - Native C++ except for the windowed-rendering `WS_CLIPCHILDREN` and focus
-  hand-back changes in `native/CefBrowser_N.cpp` (`native/context.cpp`, `native/CefApp.cpp`, etc. are
-  untouched).
+  hand-back changes in `native/CefBrowser_N.cpp`, the Windows multi-threaded
+  message loop in `native/context.cpp`, and the embedder branding hooks listed
+  above.
 - Upstream behavior when `initialization_mode` is left at its default.
 
 ## Distribution model

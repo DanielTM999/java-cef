@@ -142,6 +142,7 @@ set(JCEF_SRCS
   url_request_client.cpp
   url_request_client.h
   util.h
+  window_branding.h
   window_handler.cpp
   window_handler.h
   write_handler.cpp
@@ -170,6 +171,7 @@ set(JCEF_SRCS_WINDOWS
   temp_window_win.cc
   temp_window_win.h
   util_win.cpp
+  window_branding_win.cpp
   )
 APPEND_PLATFORM_SOURCES(JCEF_SRCS)
 source_group(jcef FILES ${JCEF_SRCS})
