@@ -11,10 +11,18 @@ import java.io.InputStream;
 import java.io.OutputStream;
 import java.net.URL;
 import java.net.URLConnection;
+import java.nio.channels.FileChannel;
+import java.nio.channels.FileLock;
+import java.nio.channels.OverlappingFileLockException;
+import java.nio.charset.StandardCharsets;
+import java.nio.file.FileVisitResult;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.Paths;
+import java.nio.file.SimpleFileVisitor;
 import java.nio.file.StandardCopyOption;
+import java.nio.file.StandardOpenOption;
+import java.nio.file.attribute.BasicFileAttributes;
 import java.util.HashSet;
 import java.util.Enumeration;
 import java.util.List;
@@ -87,6 +95,9 @@ public class SystemBootstrap {
         private static Path libraryPath_;
         private static boolean runtimeResolveAttempted_ = false;
         private static final String RUNTIME_MARKER = ".jcef-runtime-complete";
+        private static final String RUNTIME_LOCK = ".jcef-runtime-lock";
+        private static FileChannel runtimeLockChannel_;
+        private static FileLock runtimeLock_;
         private static RuntimeDownloadProvider downloadProvider_ =
                 new DefaultRuntimeDownloadProvider();
         private static DownloadProgressListener progressListener_;
@@ -155,7 +166,7 @@ public class SystemBootstrap {
             URL manifestUrl = getResource(manifestResource);
             if (manifestUrl == null) return null;
 
-            Path root = cacheRoot().resolve(platform);
+            Path root = runtimeRoot(platform);
             try (InputStream in = openResource(manifestResource)) {
                 if (in == null) return null;
 
@@ -165,6 +176,7 @@ public class SystemBootstrap {
                     if (entry.length() == 0 || entry.startsWith("#")) continue;
                     extractEntry(platform, root, entry);
                 }
+                writeMarker(root, "source=embedded");
             } catch (IOException e) {
                 UnsatisfiedLinkError error = new UnsatisfiedLinkError(
                         "Failed to extract bundled JCEF native runtime: " + e.getMessage());
@@ -173,6 +185,7 @@ public class SystemBootstrap {
             }
 
             libraryPath_ = macLibraryPath(root);
+            cleanupStaleRuntimesAsync(platform);
             return libraryPath_;
         }
 
@@ -188,11 +201,11 @@ public class SystemBootstrap {
             }
             if (url == null) return null;
 
-            Path cache = cacheRoot();
-            Path root = cache.resolve(platform);
-            Path marker = root.resolve(RUNTIME_MARKER);
-            if (Files.isRegularFile(marker) && containsRuntimeLibrary(root)) {
+            Path root = runtimeRoot(platform);
+            Path cache = root.getParent();
+            if (isCurrentRuntime(root) && containsRuntimeLibrary(root)) {
                 libraryPath_ = macLibraryPath(root);
+                cleanupStaleRuntimesAsync(platform);
                 return libraryPath_;
             }
 
@@ -201,8 +214,9 @@ public class SystemBootstrap {
                 Files.createDirectories(cache);
                 download(url, zipPath, platform);
                 extractZip(zipPath, root);
-                Files.write(marker, ("url=" + url + "\n").getBytes("UTF-8"));
+                writeMarker(root, "url=" + url);
                 libraryPath_ = macLibraryPath(root);
+                cleanupStaleRuntimesAsync(platform);
                 return libraryPath_;
             } catch (IOException e) {
                 throw runtimeLoadError(
@@ -385,16 +399,151 @@ public class SystemBootstrap {
             return ClassLoader.getSystemResourceAsStream(resource);
         }
 
-        private static Path cacheRoot() {
+        // Orion fork addition. See MODIFICATIONS.md.
+        // Every runtime lives under <base>/<version>/<platform>, also when the
+        // embedder overrides the base with jcef.orion.cache.path, so a new
+        // release never reuses the native runtime of an older one.
+        private static Path cacheBase() {
             String override = System.getProperty("jcef.orion.cache.path");
             if (override != null && override.length() > 0) return Paths.get(override);
 
             String home = System.getProperty("user.home");
             if (home == null || home.length() == 0) {
-                return Paths.get(
-                        System.getProperty("java.io.tmpdir"), "jcef-orion", cacheVersion());
+                return Paths.get(System.getProperty("java.io.tmpdir"), "jcef-orion");
             }
-            return Paths.get(home, ".jcef-orion", cacheVersion());
+            return Paths.get(home, ".jcef-orion");
+        }
+
+        private static Path runtimeRoot(String platform) {
+            return cacheBase().resolve(cacheVersion()).resolve(platform);
+        }
+
+        private static void writeMarker(Path root, String detail) throws IOException {
+            String content = "version=" + cacheVersion() + "\n" + detail + "\n";
+            Files.write(root.resolve(RUNTIME_MARKER), content.getBytes("UTF-8"));
+        }
+
+        private static boolean isCurrentRuntime(Path root) {
+            Path marker = root.resolve(RUNTIME_MARKER);
+            if (!Files.isRegularFile(marker)) return false;
+            try {
+                for (String line : Files.readAllLines(marker, StandardCharsets.UTF_8)) {
+                    if (line.equals("version=" + cacheVersion())) return true;
+                }
+            } catch (IOException ignored) {
+            }
+            return false;
+        }
+
+        // Removes runtimes of other versions (and the pre-versioned layout
+        // <base>/<platform>) in the background. Only directories carrying the
+        // runtime marker are touched, and each is renamed before deletion: on
+        // Windows the rename fails while another process still has its
+        // libraries loaded, so a runtime in use is left alone.
+        private static void cleanupStaleRuntimesAsync(final String platform) {
+            lockRuntimeInUse(runtimeRoot(platform));
+            if ("false".equalsIgnoreCase(System.getProperty("jcef.orion.runtime.cleanup"))) return;
+            final Path base = cacheBase();
+            final String current = cacheVersion();
+            Thread cleaner = new Thread(new Runnable() {
+                @Override
+                public void run() {
+                    cleanupStaleRuntimes(base, platform, current);
+                }
+            }, "Orion-JCEF-Runtime-Cleanup");
+            cleaner.setDaemon(true);
+            cleaner.start();
+        }
+
+        static void cleanupStaleRuntimes(Path base, String platform, String current) {
+            removeIfStaleRuntime(base.resolve(platform));
+            File[] versions = base.toFile().listFiles();
+            if (versions == null) return;
+            for (File version : versions) {
+                if (!version.isDirectory() || version.getName().equals(current)) continue;
+                Path candidate = version.toPath().resolve(platform);
+                if (removeIfStaleRuntime(candidate)) {
+                    String[] left = version.list();
+                    if (left != null && left.length == 0) version.delete();
+                }
+            }
+        }
+
+        private static boolean removeIfStaleRuntime(Path dir) {
+            if (Files.isSymbolicLink(dir) || !Files.isRegularFile(dir.resolve(RUNTIME_MARKER))) {
+                return false;
+            }
+            Path lockFile = dir.resolve(RUNTIME_LOCK);
+            if (Files.isRegularFile(lockFile)) {
+                if (!isUnused(lockFile)) return false;
+            } else if (!OS.isWindows()) {
+                // Runtimes from before the lock existed cannot be proven unused
+                // on POSIX, where renaming a directory in use succeeds.
+                return false;
+            }
+            Path doomed = dir.resolveSibling(dir.getFileName() + ".stale-" + System.nanoTime());
+            try {
+                Files.move(dir, doomed);
+            } catch (IOException inUse) {
+                return false;
+            }
+            deleteRecursively(doomed);
+            return true;
+        }
+
+        private static boolean isUnused(Path lockFile) {
+            try (FileChannel channel = FileChannel.open(
+                         lockFile, StandardOpenOption.READ, StandardOpenOption.WRITE)) {
+                FileLock lock = channel.tryLock(0L, Long.MAX_VALUE, false);
+                if (lock == null) return false;
+                lock.release();
+                return true;
+            } catch (IOException | OverlappingFileLockException e) {
+                return false;
+            }
+        }
+
+        // Held for the lifetime of the process so that other processes can
+        // tell this runtime is in use.
+        private static void lockRuntimeInUse(Path root) {
+            if (runtimeLock_ != null) return;
+            try {
+                FileChannel channel = FileChannel.open(root.resolve(RUNTIME_LOCK),
+                        StandardOpenOption.CREATE, StandardOpenOption.READ, StandardOpenOption.WRITE);
+                FileLock lock = channel.tryLock(0L, Long.MAX_VALUE, true);
+                if (lock == null) {
+                    channel.close();
+                    return;
+                }
+                runtimeLockChannel_ = channel;
+                runtimeLock_ = lock;
+            } catch (IOException | OverlappingFileLockException | UnsupportedOperationException ignored) {
+            }
+        }
+
+        private static void deleteRecursively(Path root) {
+            try {
+                Files.walkFileTree(root, new SimpleFileVisitor<Path>() {
+                    @Override
+                    public FileVisitResult visitFile(Path file, BasicFileAttributes attrs) {
+                        try {
+                            Files.delete(file);
+                        } catch (IOException ignored) {
+                        }
+                        return FileVisitResult.CONTINUE;
+                    }
+
+                    @Override
+                    public FileVisitResult postVisitDirectory(Path dir, IOException error) {
+                        try {
+                            Files.delete(dir);
+                        } catch (IOException ignored) {
+                        }
+                        return FileVisitResult.CONTINUE;
+                    }
+                });
+            } catch (IOException ignored) {
+            }
         }
 
         private static String cacheVersion() {

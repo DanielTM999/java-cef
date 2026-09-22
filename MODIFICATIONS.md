@@ -185,6 +185,26 @@ hooked from `context.cpp` (`Configure` before `CefInitialize`,
 (`OnAfterCreated`) and the new static `CefApp.N_BrandExecutable`. AWT windows
 (`SunAwt*` classes) are never touched. Linux and macOS are no-ops.
 
+### Versioned runtime cache
+
+The runtime used to live in `<jcef.orion.cache.path>/<platform>` when the
+embedder set a cache path, with a completion marker that did not record the
+version. Once any runtime had been extracted there, every later release kept
+loading it, pairing new Java classes with an old `libcef`/`jcef` (a 1.1.0 jar
+kept running the CEF 146 runtime of 1.0.0).
+
+- Runtimes now always live in `<base>/<version>/<platform>`, where `<base>` is
+  `jcef.orion.cache.path` or `~/.jcef-orion`, and the marker records
+  `version=<version>`; a marker for another version is ignored.
+- A running process holds a shared lock on `<runtime>/.jcef-runtime-lock`.
+- After the runtime is ready, a background thread removes runtimes of other
+  versions and the old `<base>/<platform>` layout. Only directories carrying the
+  runtime marker are considered, never symlinks. A directory is removed only if
+  its lock can be taken exclusively (not in use by another process); old
+  layouts without a lock are removed only on Windows, where renaming a directory
+  whose libraries are loaded fails. Set `-Djcef.orion.runtime.cleanup=false` to
+  keep them.
+
 ### Runtime download integrity
 
 A server that closes the connection early ends the download read loop without
@@ -247,7 +267,7 @@ run downloads the runtime again instead of failing forever.
 | `java/org/cef/browser/CefBrowserOsrBuffered.java` | Opaque `TYPE_INT_RGB` frames, device-space 1:1 blit on scaled displays, opt-in paint stats. |
 | `native/context.cpp`, `native/life_span_handler.cpp`, `native/CefApp.{cpp,h}`, `native/CMakeLists.txt` | Branding hooks and `N_BrandExecutable` (see "Embedder branding"). |
 | `java/org/cef/CefApp.java` | Mode resolution; dedicated owner-thread dispatch for pre-init / init / message-loop / shutdown; `initializeAsync()` / `createClientAsync()`; one-shot native-init guard; bundled-native library path lookup; logging; branded Windows helper resolution. Legacy EDT path preserved. |
-| `java/org/cef/SystemBootstrap.java` | Default loader can extract embedded per-OS native runtime resources, download missing runtime zips from a configurable provider, report download progress, and load native libraries from the extracted cache; verifies download length and per-entry extracted sizes, and drops the cache marker when a runtime library fails to load. |
+| `java/org/cef/SystemBootstrap.java` | Default loader can extract embedded per-OS native runtime resources, download missing runtime zips from a configurable provider, report download progress, and load native libraries from the extracted cache; verifies download length and per-entry extracted sizes, and drops the cache marker when a runtime library fails to load; versioned runtime cache with in-use lock and cleanup of other versions. |
 | `java/org/cef/browser/CefBrowserFactory.java` | Added `create(...)` overload taking a `CefRendering` mode; legacy boolean overload delegates to it. |
 | `java/org/cef/CefClient.java` | Added `createBrowser(...)` overloads taking a `CefRendering` mode. |
 | `java/org/cef/browser/CefBrowserWr.java` | `setIgnoreRepaint(true)` on the hosting `Canvas` to cut windowed-rendering flicker; pointer-driven keyboard focus for windowed browsers on Linux/X11. |
