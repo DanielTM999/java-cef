@@ -205,6 +205,14 @@ kept running the CEF 146 runtime of 1.0.0).
   whose libraries are loaded fails. Set `-Djcef.orion.runtime.cleanup=false` to
   keep them.
 
+The version is resolved, in order, from `-Djcef.orion.version`, the resource
+`org/cef/jcef-orion-version.properties` (written by `scripts/package-portable.sh`)
+and the jar manifest's `Implementation-Version`. The resource exists because
+shaded/fat jars (e.g. `maven-shade-plugin`) replace the manifest: an embedder
+shipping such a jar otherwise fell back to `1.0.0` and kept downloading the
+CEF 146 runtime of that release. When no version can be found the loader warns,
+still uses `1.0.0`, and never removes other runtimes.
+
 ### Runtime download integrity
 
 A server that closes the connection early ends the download read loop without

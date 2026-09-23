@@ -91,6 +91,9 @@ public class SystemBootstrap {
         private static final String RESOURCE_ROOT = "org/cef/native";
         private static final String DEFAULT_REPOSITORY = "DanielTM999/java-cef";
         private static final String DEFAULT_CACHE_VERSION = "1.0.0";
+        private static final String VERSION_RESOURCE = "/org/cef/jcef-orion-version.properties";
+        private static boolean versionResolved_;
+        private static String version_;
         private static final Set<String> loaded_ = new HashSet<String>();
         private static Path libraryPath_;
         private static boolean runtimeResolveAttempted_ = false;
@@ -443,6 +446,7 @@ public class SystemBootstrap {
         private static void cleanupStaleRuntimesAsync(final String platform) {
             lockRuntimeInUse(runtimeRoot(platform));
             if ("false".equalsIgnoreCase(System.getProperty("jcef.orion.runtime.cleanup"))) return;
+            if (resolvedVersion() == null) return;
             final Path base = cacheBase();
             final String current = cacheVersion();
             Thread cleaner = new Thread(new Runnable() {
@@ -547,10 +551,46 @@ public class SystemBootstrap {
         }
 
         private static String cacheVersion() {
-            Package pkg = SystemBootstrap.class.getPackage();
-            String version = pkg == null ? null : pkg.getImplementationVersion();
-            if (version == null || version.length() == 0) return DEFAULT_CACHE_VERSION;
-            return version;
+            String version = resolvedVersion();
+            return version == null ? DEFAULT_CACHE_VERSION : version;
+        }
+
+        // Orion fork addition. See MODIFICATIONS.md.
+        // Fat/shaded jars (e.g. maven-shade) replace the jar manifest, which drops
+        // Implementation-Version. The version is therefore also packaged as a
+        // resource inside org/cef, which survives repackaging.
+        private static synchronized String resolvedVersion() {
+            if (versionResolved_) return version_;
+            versionResolved_ = true;
+            version_ = nonEmpty(System.getProperty("jcef.orion.version"));
+            if (version_ == null) version_ = versionFromResource();
+            if (version_ == null) {
+                Package pkg = SystemBootstrap.class.getPackage();
+                version_ = nonEmpty(pkg == null ? null : pkg.getImplementationVersion());
+            }
+            if (version_ == null) {
+                System.err.println("[JCEF] jcef-orion version unknown (no " + VERSION_RESOURCE
+                        + " and no Implementation-Version); using " + DEFAULT_CACHE_VERSION
+                        + " and skipping cleanup of other runtimes. Set -Djcef.orion.version to fix.");
+            }
+            return version_;
+        }
+
+        private static String versionFromResource() {
+            try (InputStream in = SystemBootstrap.class.getResourceAsStream(VERSION_RESOURCE)) {
+                if (in == null) return null;
+                java.util.Properties properties = new java.util.Properties();
+                properties.load(in);
+                return nonEmpty(properties.getProperty("version"));
+            } catch (IOException e) {
+                return null;
+            }
+        }
+
+        private static String nonEmpty(String value) {
+            if (value == null) return null;
+            value = value.trim();
+            return value.length() == 0 ? null : value;
         }
 
         private static Path macLibraryPath(Path root) {

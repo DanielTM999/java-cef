@@ -70,6 +70,9 @@ fi
 printf 'Implementation-Title: JCEF Orion\n' >> "${GENERATED_MANIFEST}"
 printf 'Implementation-Version: %s\n' "${VERSION}" >> "${GENERATED_MANIFEST}"
 printf 'Implementation-Vendor: Orion\n' >> "${GENERATED_MANIFEST}"
+# Also keep the version inside org/cef: shaded/fat jars replace the manifest,
+# and SystemBootstrap needs the version to pick the matching native runtime.
+printf 'version=%s\n' "${VERSION}" > "${CLASSES_DIR}/org/cef/jcef-orion-version.properties"
 jar -cmf "${GENERATED_MANIFEST}" "${OUT_DIR}/${JAR_NAME}" -C "${CLASSES_DIR}" org
 rm -f "${GENERATED_MANIFEST}"
 
