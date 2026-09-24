@@ -26,14 +26,16 @@ bool LifeSpanHandler::OnBeforePopup(CefRefPtr<CefBrowser> browser,
                                     CefBrowserSettings& settings,
                                     CefRefPtr<CefDictionaryValue>& extra_info,
                                     bool* no_javascript_access) {
-  if (browser->GetHost()->IsWindowRenderingDisabled()) {
-    // Cancel popups in off-screen rendering mode.
-    return true;
-  }
+  // Orion fork: upstream cancels every popup in off-screen rendering mode
+  // before reaching Java, so target="_blank" links and window.open() were
+  // silently dropped. Always ask the Java handler first (the embedder can open
+  // the URL in a new tab), then still cancel the native popup in OSR mode
+  // because a windowless popup without a render handler would be invisible.
+  const bool is_osr = browser->GetHost()->IsWindowRenderingDisabled();
 
   ScopedJNIEnv env;
   if (!env)
-    return false;
+    return is_osr;
 
   ScopedJNIBrowser jbrowser(env, browser);
   ScopedJNIFrame jframe(env, frame);
@@ -48,6 +50,8 @@ bool LifeSpanHandler::OnBeforePopup(CefRefPtr<CefBrowser> browser,
                   Boolean, jreturn, jbrowser.get(), jframe.get(),
                   jtargetUrl.get(), jtargetFrameName.get());
 
+  if (is_osr)
+    return true;
   return (jreturn != JNI_FALSE);
 }
 

@@ -185,6 +185,20 @@ hooked from `context.cpp` (`Configure` before `CefInitialize`,
 (`OnAfterCreated`) and the new static `CefApp.N_BrandExecutable`. AWT windows
 (`SunAwt*` classes) are never touched. Linux and macOS are no-ops.
 
+### OSR popups routed to Java
+
+Upstream `LifeSpanHandler::OnBeforePopup` returns `true` (cancel) for every
+off-screen-rendered browser **before** calling Java, so in OSR mode
+`target="_blank"` links and `window.open(...)` were silently dropped and
+`CefLifeSpanHandler.onBeforePopup` never fired. Only middle-click still worked,
+because it arrives through `CefRequestHandler.onOpenURLFromTab`.
+
+The fork now always calls the Java `onBeforePopup`, so the embedder can open the
+target URL itself (e.g. in a new tab). In OSR mode the native popup is still
+cancelled afterwards regardless of the Java return value, because a windowless
+popup without a render handler would be invisible. Windowed rendering is
+unchanged: the Java return value decides. The Java API is unchanged.
+
 ### Versioned runtime cache
 
 The runtime used to live in `<jcef.orion.cache.path>/<platform>` when the
@@ -273,7 +287,7 @@ run downloads the runtime again instead of failing forever.
 |---|---|
 | `java/org/cef/CefSettings.java` | Added `CefInitializationMode` enum + `initialization_mode` field; `app_icon_path`, `app_user_model_id`, `app_display_name`, `helper_executable_name` branding fields. |
 | `java/org/cef/browser/CefBrowserOsrBuffered.java` | Opaque `TYPE_INT_RGB` frames, device-space 1:1 blit on scaled displays, opt-in paint stats. |
-| `native/context.cpp`, `native/life_span_handler.cpp`, `native/CefApp.{cpp,h}`, `native/CMakeLists.txt` | Branding hooks and `N_BrandExecutable` (see "Embedder branding"). |
+| `native/context.cpp`, `native/life_span_handler.cpp`, `native/CefApp.{cpp,h}`, `native/CMakeLists.txt` | Branding hooks and `N_BrandExecutable` (see "Embedder branding"); `OnBeforePopup` always reaches Java in OSR mode (see "OSR popups routed to Java"). |
 | `java/org/cef/CefApp.java` | Mode resolution; dedicated owner-thread dispatch for pre-init / init / message-loop / shutdown; `initializeAsync()` / `createClientAsync()`; one-shot native-init guard; bundled-native library path lookup; logging; branded Windows helper resolution. Legacy EDT path preserved. |
 | `java/org/cef/SystemBootstrap.java` | Default loader can extract embedded per-OS native runtime resources, download missing runtime zips from a configurable provider, report download progress, and load native libraries from the extracted cache; verifies download length and per-entry extracted sizes, and drops the cache marker when a runtime library fails to load; versioned runtime cache with in-use lock and cleanup of other versions. |
 | `java/org/cef/browser/CefBrowserFactory.java` | Added `create(...)` overload taking a `CefRendering` mode; legacy boolean overload delegates to it. |
