@@ -29,4 +29,22 @@ public class CefBrowserFactory {
                 return new CefBrowserWr(client, url, context, settings);
         }
     }
+
+    /**
+     * Orion fork: creates an off-screen buffered browser that adopts a native popup instead of
+     * creating its own native browser. See {@link CefClient#createPopupBrowser}.
+     */
+    public static CefBrowser createPopupHost(
+            CefClient client, String url, CefBrowserSettings settings) {
+        return CefBrowserOsrBuffered.createPopupHost(client, url, settings);
+    }
+
+    /**
+     * Orion fork: called by {@link CefClient} once the native browser is bound to the Java object.
+     */
+    public static void notifyNativeCreated(CefBrowser browser) {
+        if (browser instanceof CefBrowser_N) {
+            ((CefBrowser_N) browser).onNativeCreated();
+        }
+    }
 }

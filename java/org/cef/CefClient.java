@@ -167,6 +167,18 @@ public class CefClient extends CefClientHandler
         return CefBrowserFactory.create(this, url, rendering, isTransparent, context, settings);
     }
 
+    /**
+     * Orion fork: creates an off-screen buffered browser that does not create a native browser by
+     * itself but adopts the popup of another browser. Return it from
+     * {@link CefLifeSpanHandler#onBeforePopupBrowser} of the opener's client. Use a dedicated
+     * client per popup: the popup's callbacks are delivered to this client.
+     */
+    public CefBrowser createPopupBrowser(String url, CefBrowserSettings settings) {
+        if (isDisposed_)
+            throw new IllegalStateException("Can't create browser. CefClient is disposed");
+        return CefBrowserFactory.createPopupHost(this, url, settings);
+    }
+
     @Override
     protected CefBrowser getBrowser(int identifier) {
         synchronized (browser_) {
@@ -573,6 +585,22 @@ public class CefClient extends CefClientHandler
     }
 
     @Override
+    public CefBrowser onBeforePopupBrowser(
+            CefBrowser browser, CefFrame frame, String target_url, String target_frame_name) {
+        if (isDisposed_) return null;
+        if (lifeSpanHandler_ != null && browser != null)
+            return lifeSpanHandler_.onBeforePopupBrowser(
+                    browser, frame, target_url, target_frame_name);
+        return null;
+    }
+
+    @Override
+    public void onPopupBrowserAborted(CefBrowser popup) {
+        if (popup == null) return;
+        if (lifeSpanHandler_ != null) lifeSpanHandler_.onPopupBrowserAborted(popup);
+    }
+
+    @Override
     public void onAfterCreated(CefBrowser browser) {
         if (browser == null) return;
 
@@ -581,6 +609,7 @@ public class CefClient extends CefClientHandler
         synchronized (browser_) {
             browser_.put(identifier, browser);
         }
+        CefBrowserFactory.notifyNativeCreated(browser);
         if (lifeSpanHandler_ != null) lifeSpanHandler_.onAfterCreated(browser);
     }
 

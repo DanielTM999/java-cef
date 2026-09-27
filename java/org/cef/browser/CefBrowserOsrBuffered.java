@@ -56,6 +56,7 @@ import java.util.function.Consumer;
 import javax.swing.JComponent;
 import javax.swing.MenuSelectionManager;
 import javax.swing.SwingUtilities;
+import javax.swing.Timer;
 
 /**
  * An off-screen rendered browser that paints into a lightweight Swing
@@ -70,12 +71,21 @@ import javax.swing.SwingUtilities;
  */
 class CefBrowserOsrBuffered extends CefBrowser_N implements CefRenderHandler, CefScrollConfigurable {
     private static final int DEFAULT_WHEEL_SCROLL_PIXELS = 100;
+    // Frame buffers grow in steps so a live resize reuses the same pixel array
+    // instead of allocating a full-frame image (a G1 humongous object) per frame.
+    private static final int BUFFER_GROWTH_STEP = 256;
+    // At most one WasResized per frame interval while the component is being
+    // dragged; the trailing call always delivers the final size.
+    private static final int RESIZE_COALESCE_MS = 16;
 
     private volatile int scrollPixelsPerNotch_ = DEFAULT_WHEEL_SCROLL_PIXELS;
 
     private final boolean isTransparent_;
+    private final boolean adoptedPopup_;
     private BufferedCanvas canvas_;
     private boolean justCreated_ = false;
+    private Timer resizeTimer_;
+    private long lastResizeSentNanos_ = 0L;
     private Rectangle browser_rect_ = new Rectangle(0, 0, 1, 1); // Work around CEF issue #1437.
     private Point screenPoint_ = new Point(0, 0);
     private double scaleFactor_ = 1.0;
@@ -85,11 +95,13 @@ class CefBrowserOsrBuffered extends CefBrowser_N implements CefRenderHandler, Ce
     private final Object paintLock_ = new Object();
     private BufferedImage mainImage_;
     private int[] mainData_;
+    private int mainStride_ = 0;
     private int mainWidth_ = 0;
     private int mainHeight_ = 0;
 
     private BufferedImage popupImage_;
     private int[] popupData_;
+    private int popupStride_ = 0;
     private int popupWidth_ = 0;
     private int popupHeight_ = 0;
     private boolean popupVisible_ = false;
@@ -100,21 +112,62 @@ class CefBrowserOsrBuffered extends CefBrowser_N implements CefRenderHandler, Ce
 
     CefBrowserOsrBuffered(CefClient client, String url, boolean transparent,
             CefRequestContext context, CefBrowserSettings settings) {
-        this(client, url, transparent, context, null, null, settings);
+        this(client, url, transparent, context, null, null, settings, false);
     }
 
     private CefBrowserOsrBuffered(CefClient client, String url, boolean transparent,
             CefRequestContext context, CefBrowserOsrBuffered parent, Point inspectAt,
-            CefBrowserSettings settings) {
+            CefBrowserSettings settings, boolean adoptedPopup) {
         super(client, url, context, parent, inspectAt, settings);
         isTransparent_ = transparent;
+        adoptedPopup_ = adoptedPopup;
         canvas_ = new BufferedCanvas();
+    }
+
+    /**
+     * Orion fork: a browser that never creates a native browser itself. The
+     * native side binds the popup of another browser to it from
+     * LifeSpanHandler::OnBeforePopup (see CefLifeSpanHandler.onBeforePopupBrowser).
+     * The popup inherits the opener's request context, so none is kept here.
+     */
+    static CefBrowserOsrBuffered createPopupHost(
+            CefClient client, String url, CefBrowserSettings settings) {
+        return new CefBrowserOsrBuffered(client, url, false, null, null, null, settings, true);
     }
 
     @Override
     public void createImmediately() {
         justCreated_ = true;
         createBrowserIfRequired();
+    }
+
+    @Override
+    void onNativeCreated() {
+        if (!adoptedPopup_) {
+            return;
+        }
+        if (isCloseRequested()) {
+            // The embedder closed the popup before Chromium created it; the
+            // earlier close was a no-op because nothing was bound yet.
+            forceNativeClose();
+            return;
+        }
+        // The popup was created with whatever size CEF could query before it
+        // was bound to this object; push the real view size now.
+        SwingUtilities.invokeLater(() -> {
+            BufferedCanvas canvas = canvas_;
+            if (canvas != null && canvas.getWidth() > 0 && canvas.getHeight() > 0) {
+                canvas.updateGeometry();
+            } else {
+                wasResized(browser_rect_.width, browser_rect_.height);
+            }
+            invalidate();
+            if (justCreated_) {
+                notifyAfterParentChanged();
+                setFocus(true);
+                justCreated_ = false;
+            }
+        });
     }
 
     @Override
@@ -141,11 +194,16 @@ class CefBrowserOsrBuffered extends CefBrowser_N implements CefRenderHandler, Ce
     protected CefBrowser_N createDevToolsBrowser(CefClient client, String url,
             CefRequestContext context, CefBrowser_N parent, Point inspectAt) {
         return new CefBrowserOsrBuffered(
-                client, url, isTransparent_, context, (CefBrowserOsrBuffered) this, inspectAt, null);
+                client, url, isTransparent_, context, (CefBrowserOsrBuffered) this, inspectAt, null,
+                false);
     }
 
     private void createBrowserIfRequired() {
         if (getNativeRef("CefBrowser") == 0) {
+            if (adoptedPopup_) {
+                // Bound asynchronously by the native popup; see onNativeCreated.
+                return;
+            }
             if (getParentBrowser() != null) {
                 createDevTools(getParentBrowser(), getClient(), 0, true, isTransparent_, null,
                         getInspectAt());
@@ -176,6 +234,27 @@ class CefBrowserOsrBuffered extends CefBrowser_N implements CefRenderHandler, Ce
             depth_per_component = 8;
             wasResized(canvas_.getWidth(), canvas_.getHeight());
         }
+    }
+
+    private void requestResize() {
+        if (resizeTimer_ == null) {
+            resizeTimer_ = new Timer(RESIZE_COALESCE_MS, e -> flushResize());
+            resizeTimer_.setRepeats(false);
+        }
+        if (resizeTimer_.isRunning()) {
+            return;
+        }
+        long elapsed = System.nanoTime() - lastResizeSentNanos_;
+        if (elapsed >= RESIZE_COALESCE_MS * 1_000_000L) {
+            flushResize();
+        } else {
+            resizeTimer_.start();
+        }
+    }
+
+    private void flushResize() {
+        lastResizeSentNanos_ = System.nanoTime();
+        wasResized(browser_rect_.width, browser_rect_.height);
     }
 
     // CefRenderHandler
@@ -279,33 +358,53 @@ class CefBrowserOsrBuffered extends CefBrowser_N implements CefRenderHandler, Ce
     private void storeMain(Rectangle[] dirtyRects, ByteBuffer buffer, int width, int height) {
         boolean resized = width != mainWidth_ || height != mainHeight_ || mainImage_ == null;
         if (resized) {
-            mainImage_ = new BufferedImage(width, height, imageType());
-            mainData_ = ((DataBufferInt) mainImage_.getRaster().getDataBuffer()).getData();
+            if (needsNewBuffer(mainImage_, width, height)) {
+                mainImage_ = allocateBuffer(width, height);
+                mainData_ = ((DataBufferInt) mainImage_.getRaster().getDataBuffer()).getData();
+            }
+            mainStride_ = mainImage_.getWidth();
             mainWidth_ = width;
             mainHeight_ = height;
         }
-        IntBuffer src = asIntBuffer(buffer);
-        if (resized) {
-            src.get(mainData_, 0, Math.min(mainData_.length, src.remaining()));
-        } else {
-            copyDirtyRows(src, mainData_, width, height, dirtyRects);
-        }
+        copyRows(asIntBuffer(buffer), mainData_, mainStride_, width, height,
+                resized ? null : dirtyRects);
     }
 
     private void storePopup(Rectangle[] dirtyRects, ByteBuffer buffer, int width, int height) {
         boolean resized = width != popupWidth_ || height != popupHeight_ || popupImage_ == null;
         if (resized) {
-            popupImage_ = new BufferedImage(width, height, imageType());
-            popupData_ = ((DataBufferInt) popupImage_.getRaster().getDataBuffer()).getData();
+            if (needsNewBuffer(popupImage_, width, height)) {
+                popupImage_ = allocateBuffer(width, height);
+                popupData_ = ((DataBufferInt) popupImage_.getRaster().getDataBuffer()).getData();
+            }
+            popupStride_ = popupImage_.getWidth();
             popupWidth_ = width;
             popupHeight_ = height;
         }
-        IntBuffer src = asIntBuffer(buffer);
-        if (resized) {
-            src.get(popupData_, 0, Math.min(popupData_.length, src.remaining()));
-        } else {
-            copyDirtyRows(src, popupData_, width, height, dirtyRects);
+        copyRows(asIntBuffer(buffer), popupData_, popupStride_, width, height,
+                resized ? null : dirtyRects);
+    }
+
+    private static int roundUpToStep(int value) {
+        return ((Math.max(1, value) + BUFFER_GROWTH_STEP - 1) / BUFFER_GROWTH_STEP)
+                * BUFFER_GROWTH_STEP;
+    }
+
+    /**
+     * Keeps the current buffer while the frame fits in it, and only shrinks it
+     * when it is more than twice the rounded-up frame area.
+     */
+    private static boolean needsNewBuffer(BufferedImage image, int width, int height) {
+        if (image == null || image.getWidth() < width || image.getHeight() < height) {
+            return true;
         }
+        long capacity = (long) image.getWidth() * image.getHeight();
+        long wanted = (long) roundUpToStep(width) * roundUpToStep(height);
+        return capacity > wanted * 2;
+    }
+
+    private BufferedImage allocateBuffer(int width, int height) {
+        return new BufferedImage(roundUpToStep(width), roundUpToStep(height), imageType());
     }
 
     private static IntBuffer asIntBuffer(ByteBuffer buffer) {
@@ -314,25 +413,35 @@ class CefBrowserOsrBuffered extends CefBrowser_N implements CefRenderHandler, Ce
         return duplicate.asIntBuffer();
     }
 
-    private static void copyDirtyRows(
-            IntBuffer src, int[] dst, int width, int height, Rectangle[] dirtyRects) {
+    private static void copyRows(IntBuffer src, int[] dst, int stride, int width, int height,
+            Rectangle[] dirtyRects) {
         if (dirtyRects == null || dirtyRects.length == 0) {
-            src.get(dst, 0, Math.min(dst.length, src.remaining()));
+            copyRect(src, dst, stride, width, height, 0, 0, width, height);
             return;
         }
         for (Rectangle rect : dirtyRects) {
-            int x = Math.max(0, rect.x);
-            int y = Math.max(0, rect.y);
-            int w = Math.min(rect.width, width - x);
-            int h = Math.min(rect.height, height - y);
-            if (w <= 0 || h <= 0) {
-                continue;
-            }
-            for (int row = y; row < y + h; row++) {
-                int offset = row * width + x;
-                src.position(offset);
-                src.get(dst, offset, w);
-            }
+            copyRect(src, dst, stride, width, height, rect.x, rect.y, rect.width, rect.height);
+        }
+    }
+
+    private static void copyRect(IntBuffer src, int[] dst, int stride, int width, int height,
+            int rx, int ry, int rw, int rh) {
+        int x = Math.max(0, rx);
+        int y = Math.max(0, ry);
+        int w = Math.min(rw - (x - rx), width - x);
+        int availableRows = width <= 0 ? 0 : src.capacity() / width;
+        int bottom = Math.min(Math.min(ry + rh, height), availableRows);
+        if (w <= 0 || bottom <= y) {
+            return;
+        }
+        if (x == 0 && w == width && stride == width) {
+            src.position(y * width);
+            src.get(dst, y * stride, (bottom - y) * width);
+            return;
+        }
+        for (int row = y; row < bottom; row++) {
+            src.position(row * width + x);
+            src.get(dst, row * stride + x, w);
         }
     }
 
@@ -448,7 +557,8 @@ class CefBrowserOsrBuffered extends CefBrowser_N implements CefRenderHandler, Ce
             BufferedImage copy =
                     new BufferedImage(mainWidth_, mainHeight_, mainImage_.getType());
             Graphics2D g = copy.createGraphics();
-            g.drawImage(mainImage_, 0, 0, null);
+            g.drawImage(mainImage_, 0, 0, mainWidth_, mainHeight_, 0, 0, mainWidth_, mainHeight_,
+                    null);
             g.dispose();
 
             if (!nativeResolution && scaleFactor_ != 1.0) {
@@ -669,7 +779,7 @@ class CefBrowserOsrBuffered extends CefBrowser_N implements CefRenderHandler, Ce
             browser_rect_.setBounds(0, 0, width, height);
             updateScreenPoint();
             updateScaleFactor();
-            wasResized(width, height);
+            requestResize();
         }
 
         private void updateScreenPoint() {
@@ -726,17 +836,18 @@ class CefBrowserOsrBuffered extends CefBrowser_N implements CefRenderHandler, Ce
                         }
                         int viewW = (int) Math.ceil(getWidth() * sf);
                         int viewH = (int) Math.ceil(getHeight() * sf);
-                        int imgW = mainImage_.getWidth();
-                        int imgH = mainImage_.getHeight();
-                        // Only clear what the frame does not cover.
+                        int imgW = mainWidth_;
+                        int imgH = mainHeight_;
+                        // Only clear what the frame does not cover. While a resize
+                        // is waiting for its frame, extend the page's own edge color
+                        // instead of flashing the component background.
+                        if (imgW < viewW || imgH < viewH) {
+                            g2.setColor(edgeColor());
+                        }
                         if (imgW < viewW) g2.fillRect(imgW, 0, viewW - imgW, viewH);
                         if (imgH < viewH) g2.fillRect(0, imgH, Math.min(imgW, viewW), viewH - imgH);
-                        g2.drawImage(mainImage_, 0, 0, null);
-                        if (popupVisible_ && popupImage_ != null && popupRect_.width > 0) {
-                            int px = (int) Math.round(popupRect_.x * sf);
-                            int py = (int) Math.round(popupRect_.y * sf);
-                            g2.drawImage(popupImage_, px, py, null);
-                        }
+                        g2.drawImage(mainImage_, 0, 0, imgW, imgH, 0, 0, imgW, imgH, null);
+                        drawPopup(g2, sf);
                     } else {
                         // Unusual target (printing, custom transforms): fall back to
                         // resampling the frame into logical coordinates.
@@ -745,12 +856,9 @@ class CefBrowserOsrBuffered extends CefBrowser_N implements CefRenderHandler, Ce
                         g2.setRenderingHint(RenderingHints.KEY_INTERPOLATION,
                                 RenderingHints.VALUE_INTERPOLATION_BILINEAR);
                         g2.scale(1.0 / sf, 1.0 / sf);
-                        g2.drawImage(mainImage_, 0, 0, null);
-                        if (popupVisible_ && popupImage_ != null && popupRect_.width > 0) {
-                            int px = (int) Math.round(popupRect_.x * sf);
-                            int py = (int) Math.round(popupRect_.y * sf);
-                            g2.drawImage(popupImage_, px, py, null);
-                        }
+                        g2.drawImage(mainImage_, 0, 0, mainWidth_, mainHeight_, 0, 0, mainWidth_,
+                                mainHeight_, null);
+                        drawPopup(g2, sf);
                         g2.setTransform(saved);
                     }
                 }
@@ -760,6 +868,26 @@ class CefBrowserOsrBuffered extends CefBrowser_N implements CefRenderHandler, Ce
                     PaintStats.recordPaint(System.nanoTime() - start);
                 }
             }
+        }
+
+        private void drawPopup(Graphics2D g2, double sf) {
+            if (popupVisible_ && popupImage_ != null && popupRect_.width > 0) {
+                int px = (int) Math.round(popupRect_.x * sf);
+                int py = (int) Math.round(popupRect_.y * sf);
+                g2.drawImage(popupImage_, px, py, px + popupWidth_, py + popupHeight_, 0, 0,
+                        popupWidth_, popupHeight_, null);
+            }
+        }
+
+        private Color edgeColor() {
+            if (mainData_ == null || mainWidth_ <= 0 || mainHeight_ <= 0) {
+                return getBackground();
+            }
+            int index = (mainHeight_ - 1) * mainStride_ + (mainWidth_ - 1);
+            if (index < 0 || index >= mainData_.length) {
+                return getBackground();
+            }
+            return new Color(mainData_[index] & 0x00FFFFFF);
         }
     }
 

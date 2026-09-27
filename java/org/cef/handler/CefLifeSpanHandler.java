@@ -25,6 +25,33 @@ public interface CefLifeSpanHandler {
             CefBrowser browser, CefFrame frame, String target_url, String target_frame_name);
 
     /**
+     * Orion fork: called on the UI thread before a popup is created for an off-screen rendered
+     * browser. Return a browser created with {@link org.cef.CefClient#createPopupBrowser} to host
+     * the popup: the native popup (which keeps its {@code window.opener} relationship) is then
+     * adopted by that Java browser and reported through its client's {@link #onAfterCreated}.
+     * Return null to fall back to {@link #onBeforePopup}, in which case off-screen popups are
+     * cancelled. Must not block.
+     * @param browser The source of the popup request.
+     * @param frame The source of the popup request. Instance only valid within the scope of this
+     *         method.
+     * @param target_url May be empty if none is specified with the request.
+     * @param target_frame_name May be empty if none is specified with the request.
+     * @return The browser that adopts the popup, or null.
+     */
+    default CefBrowser onBeforePopupBrowser(
+            CefBrowser browser, CefFrame frame, String target_url, String target_frame_name) {
+        return null;
+    }
+
+    /**
+     * Orion fork: called when a popup returned from {@link #onBeforePopupBrowser} could not be
+     * created. The popup browser will never be created and should be discarded. Called on the
+     * popup browser's client.
+     * @param popup The browser that was supposed to adopt the popup.
+     */
+    default void onPopupBrowserAborted(CefBrowser popup) {}
+
+    /**
      * Handle creation of a new browser window.
      * @param browser The browser generating the event.
      */

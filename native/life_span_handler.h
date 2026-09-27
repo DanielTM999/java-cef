@@ -33,6 +33,8 @@ class LifeSpanHandler : public CefLifeSpanHandler {
                              CefBrowserSettings& settings,
                              CefRefPtr<CefDictionaryValue>& extra_info,
                              bool* no_javascript_access) override;
+  virtual void OnBeforePopupAborted(CefRefPtr<CefBrowser> browser,
+                                    int popup_id) override;
   virtual void OnAfterCreated(CefRefPtr<CefBrowser> browser) override;
   virtual bool DoClose(CefRefPtr<CefBrowser> browser) override;
   virtual void OnBeforeClose(CefRefPtr<CefBrowser> browser) override;
@@ -41,8 +43,22 @@ class LifeSpanHandler : public CefLifeSpanHandler {
 
   void registerJBrowser(jobject browser);
   void unregisterJBrowser(jobject browser);
+  // Orion fork: removes |browser| from the pending queue. Returns false if it
+  // was not queued (e.g. already consumed by OnAfterCreated).
+  bool takeJBrowser(jobject browser);
 
  protected:
+  // Orion fork: binds an OSR popup to a Java browser returned from
+  // CefLifeSpanHandler.onBeforePopupBrowser. See MODIFICATIONS.md.
+  bool AdoptPopup(JNIEnv* env,
+                  CefRefPtr<CefBrowser> browser,
+                  int popup_id,
+                  jobject jpopup,
+                  CefWindowInfo& windowInfo,
+                  CefRefPtr<CefClient>& client,
+                  CefBrowserSettings& settings,
+                  CefRefPtr<CefDictionaryValue>& extra_info);
+
   ScopedJNIObjectGlobal handle_;
   std::list<jobject> jbrowsers_;
 

@@ -208,6 +208,33 @@ abstract class CefBrowser_N extends CefNativeAdapter implements CefBrowser {
     }
 
     /**
+     * Orion fork: called once the native browser has been bound to this object (from
+     * CefClient.onAfterCreated). Subclasses can push state the native side could not query
+     * before, e.g. the view size of an adopted popup.
+     */
+    void onNativeCreated() {}
+
+    /**
+     * Orion fork: true if close(true) was requested, possibly before the native
+     * browser existed (in which case the native close was a no-op).
+     */
+    boolean isCloseRequested() {
+        return isClosing_ && !isClosed_;
+    }
+
+    /**
+     * Orion fork: re-issues a forced native close, for a close requested before
+     * the native browser was bound.
+     */
+    void forceNativeClose() {
+        try {
+            N_Close(true);
+        } catch (UnsatisfiedLinkError ule) {
+            ule.printStackTrace();
+        }
+    }
+
+    /**
      * Create a new browser as dev tools
      */
     protected final void createDevTools(CefBrowser_N parent, CefClientHandler clientHandler,

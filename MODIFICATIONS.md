@@ -141,6 +141,20 @@ key was pressed in the last 3 seconds. Set `-Djcef.orion.linux.pointer-focus=fal
 to disable the whole mechanism. Windows, macOS and both off-screen modes are
 unaffected.
 
+### Buffered OSR live resize
+
+A live resize of a `CefBrowserOsrBuffered` used to allocate a new full-frame
+`BufferedImage` (about 8 MB at 1080p, a G1 humongous object) for every frame at
+a new size, and to send one `WasResized` per AWT resize event.
+
+- Frame buffers grow in 256 px steps and are reused while the frame fits (they
+  shrink only when more than twice the needed area). Frames are copied with a
+  stride and painted as a sub-region.
+- `WasResized` is coalesced to at most one per 16 ms (leading and trailing), so
+  the final size always reaches Chromium.
+- While a resize waits for its frame, the uncovered strip is filled with the
+  page's bottom-right edge color instead of the component background.
+
 ### Buffered OSR paint performance
 
 `CefBrowserOsrBuffered` used to spend most of the EDT time per frame in Java2D
@@ -185,7 +199,7 @@ hooked from `context.cpp` (`Configure` before `CefInitialize`,
 (`OnAfterCreated`) and the new static `CefApp.N_BrandExecutable`. AWT windows
 (`SunAwt*` classes) are never touched. Linux and macOS are no-ops.
 
-### OSR popups routed to Java
+### OSR popups adopted by a Java browser
 
 Upstream `LifeSpanHandler::OnBeforePopup` returns `true` (cancel) for every
 off-screen-rendered browser **before** calling Java, so in OSR mode
@@ -193,11 +207,34 @@ off-screen-rendered browser **before** calling Java, so in OSR mode
 `CefLifeSpanHandler.onBeforePopup` never fired. Only middle-click still worked,
 because it arrives through `CefRequestHandler.onOpenURLFromTab`.
 
-The fork now always calls the Java `onBeforePopup`, so the embedder can open the
-target URL itself (e.g. in a new tab). In OSR mode the native popup is still
-cancelled afterwards regardless of the Java return value, because a windowless
-popup without a render handler would be invisible. Windowed rendering is
-unchanged: the Java return value decides. The Java API is unchanged.
+Opening the target URL in a fresh browser is not enough either: the page's
+`window.open()` returns `null` and the popup has no `window.opener`. OAuth /
+"Sign in with Google" popups rely on that relationship (`postMessage` back to
+the opener), and sites that open `about:blank` and navigate the returned handle
+leave an empty page behind.
+
+In OSR mode the fork first calls the new default method
+`CefLifeSpanHandler.onBeforePopupBrowser(browser, frame, targetUrl,
+targetFrameName)`. If it returns a browser created with
+`CefClient.createPopupBrowser(url, settings)` (an `OFFSCREEN_BUFFERED` browser
+that never creates a native browser itself), the native popup is **allowed**
+and adopted by it:
+
+- `windowInfo` becomes windowless with Alloy runtime style, the popup's `client`
+  is the Java popup browser's client (use one client per popup; its handlers
+  receive the popup's callbacks), and `extra_info` carries the message router
+  configs, as in a regular `create()`.
+- The Java browser is queued on that client's `LifeSpanHandler`, so the regular
+  `OnAfterCreated` binds the native popup to it. `CefBrowserOsrBuffered` then
+  pushes its real view size (`onNativeCreated`).
+- If Chromium aborts the popup (`OnBeforePopupAborted`), the queued browser is
+  removed and `CefLifeSpanHandler.onPopupBrowserAborted(popup)` is called on the
+  popup's client.
+- The popup shares the opener's request context (cookies, incognito).
+
+If `onBeforePopupBrowser` returns `null` (the default), the previous behavior
+applies: the Java `onBeforePopup` is called and the OSR popup is cancelled.
+Windowed rendering is unchanged: the Java `onBeforePopup` return value decides.
 
 ### Versioned runtime cache
 
@@ -286,12 +323,14 @@ run downloads the runtime again instead of failing forever.
 | File | Change |
 |---|---|
 | `java/org/cef/CefSettings.java` | Added `CefInitializationMode` enum + `initialization_mode` field; `app_icon_path`, `app_user_model_id`, `app_display_name`, `helper_executable_name` branding fields. |
-| `java/org/cef/browser/CefBrowserOsrBuffered.java` | Opaque `TYPE_INT_RGB` frames, device-space 1:1 blit on scaled displays, opt-in paint stats. |
-| `native/context.cpp`, `native/life_span_handler.cpp`, `native/CefApp.{cpp,h}`, `native/CMakeLists.txt` | Branding hooks and `N_BrandExecutable` (see "Embedder branding"); `OnBeforePopup` always reaches Java in OSR mode (see "OSR popups routed to Java"). |
+| `java/org/cef/browser/CefBrowserOsrBuffered.java` | Opaque `TYPE_INT_RGB` frames, device-space 1:1 blit on scaled displays, opt-in paint stats; reusable strided frame buffers and coalesced `WasResized` (see "Buffered OSR live resize"); popup-host mode (see "OSR popups adopted by a Java browser"). |
+| `native/context.cpp`, `native/life_span_handler.{cpp,h}`, `native/CefApp.{cpp,h}`, `native/CMakeLists.txt` | Branding hooks and `N_BrandExecutable` (see "Embedder branding"); `OnBeforePopup` always reaches Java in OSR mode and can adopt the popup into a Java browser, `OnBeforePopupAborted` (see "OSR popups adopted by a Java browser"). |
+| `java/org/cef/handler/CefLifeSpanHandler.java` | Default methods `onBeforePopupBrowser` / `onPopupBrowserAborted`. |
+| `java/org/cef/browser/CefBrowser_N.java` | Package-private `onNativeCreated()` hook. |
 | `java/org/cef/CefApp.java` | Mode resolution; dedicated owner-thread dispatch for pre-init / init / message-loop / shutdown; `initializeAsync()` / `createClientAsync()`; one-shot native-init guard; bundled-native library path lookup; logging; branded Windows helper resolution. Legacy EDT path preserved. |
 | `java/org/cef/SystemBootstrap.java` | Default loader can extract embedded per-OS native runtime resources, download missing runtime zips from a configurable provider, report download progress, and load native libraries from the extracted cache; verifies download length and per-entry extracted sizes, and drops the cache marker when a runtime library fails to load; versioned runtime cache with in-use lock and cleanup of other versions. |
-| `java/org/cef/browser/CefBrowserFactory.java` | Added `create(...)` overload taking a `CefRendering` mode; legacy boolean overload delegates to it. |
-| `java/org/cef/CefClient.java` | Added `createBrowser(...)` overloads taking a `CefRendering` mode. |
+| `java/org/cef/browser/CefBrowserFactory.java` | Added `create(...)` overload taking a `CefRendering` mode; legacy boolean overload delegates to it; `createPopupHost` / `notifyNativeCreated`. |
+| `java/org/cef/CefClient.java` | Added `createBrowser(...)` overloads taking a `CefRendering` mode; `createPopupBrowser`; dispatch of `onBeforePopupBrowser` / `onPopupBrowserAborted`. |
 | `java/org/cef/browser/CefBrowserWr.java` | `setIgnoreRepaint(true)` on the hosting `Canvas` to cut windowed-rendering flicker; pointer-driven keyboard focus for windowed browsers on Linux/X11. |
 | `native/CefBrowser_N.cpp` | Windows only: sets `WS_CLIPCHILDREN` on the AWT parent window chain when creating a windowed browser; `N_SetFocus(false)` hands the native keyboard focus back to the AWT parent window. |
 | `tools/compile.sh`, `tools/compile.bat` | Also compile the new `tests/orion` package; Windows compilation now uses an argument file so `javac` receives expanded source paths reliably. |
