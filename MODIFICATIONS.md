@@ -154,6 +154,24 @@ a new size, and to send one `WasResized` per AWT resize event.
   the final size always reaches Chromium.
 - While a resize waits for its frame, the uncovered strip is filled with the
   page's bottom-right edge color instead of the component background.
+- The view rect is an immutable `volatile` snapshot (written on the EDT, read
+  by `getViewRect`/`getScreenInfo` on the CEF UI thread); `scaleFactor_` is
+  `volatile` too.
+- Resize convergence: after each `WasResized`, a 150 ms check compares the
+  last delivered frame with the expected device size (±1 px). On a mismatch it
+  re-sends `WasResized` + `Invalidate(PET_VIEW)`, up to 3 times per resize. A
+  lost resize used to leave Chromium laying the page out at the old size
+  (cropped page that could not scroll). While no frame at all has arrived
+  since the last send, it only invalidates and keeps waiting (up to 3 s)
+  instead of spending retries; a tab hidden mid-resize resumes the check when
+  it is shown again. Retries and the resize-to-frame latency are logged with
+  `-Djcef.orion.osr.stats=true`.
+- Every browser (not only adopted popups) re-pushes its geometry and
+  invalidates once the native browser is bound (`onNativeCreated`), because
+  `WasResized` calls made before the bind are dropped by the native layer.
+- `CefViewSizeHint.setViewSizeHint(w, h)` lets the embedder give a browser
+  created before its component is laid out (e.g. a pre-warmed one) a real view
+  size instead of 1x1, so its first page is laid out at the right size.
 
 ### Buffered OSR paint performance
 
@@ -305,6 +323,7 @@ run downloads the runtime again instead of failing forever.
 | `java/org/cef/browser/CefBrowserOsrBuffered.java` | Lightweight software OSR browser painting into a `BufferedImage`/`JComponent` (flicker-free embedding). |
 | `java/org/cef/browser/CefRendering.java` | Rendering-mode enum (`WINDOWED` / `OFFSCREEN` / `OFFSCREEN_BUFFERED`). |
 | `java/org/cef/browser/CefScrollConfigurable.java` | Public interface to tune the OSR mouse-wheel pixels-per-notch at runtime (implemented by `CefBrowserOsrBuffered`). |
+| `java/org/cef/browser/CefViewSizeHint.java` | Public interface to give an OSR browser its view size before its component is laid out (implemented by `CefBrowserOsrBuffered`). |
 | `java/org/cef/CefMainThread.java` | The dedicated `Orion-JCEF-Main` single-thread executor. |
 | `java/org/cef/CefInitializationException.java` | Rich Java exception wrapping native init failures. |
 | `java/tests/junittests/CefMainThreadTest.java` | Pure-Java unit tests for the owner thread. |
@@ -323,7 +342,7 @@ run downloads the runtime again instead of failing forever.
 | File | Change |
 |---|---|
 | `java/org/cef/CefSettings.java` | Added `CefInitializationMode` enum + `initialization_mode` field; `app_icon_path`, `app_user_model_id`, `app_display_name`, `helper_executable_name` branding fields. |
-| `java/org/cef/browser/CefBrowserOsrBuffered.java` | Opaque `TYPE_INT_RGB` frames, device-space 1:1 blit on scaled displays, opt-in paint stats; reusable strided frame buffers and coalesced `WasResized` (see "Buffered OSR live resize"); popup-host mode (see "OSR popups adopted by a Java browser"). |
+| `java/org/cef/browser/CefBrowserOsrBuffered.java` | Opaque `TYPE_INT_RGB` frames, device-space 1:1 blit on scaled displays, opt-in paint stats; reusable strided frame buffers, coalesced and self-verifying `WasResized`, `CefViewSizeHint` (see "Buffered OSR live resize"); popup-host mode (see "OSR popups adopted by a Java browser"). |
 | `native/context.cpp`, `native/life_span_handler.{cpp,h}`, `native/CefApp.{cpp,h}`, `native/CMakeLists.txt` | Branding hooks and `N_BrandExecutable` (see "Embedder branding"); `OnBeforePopup` always reaches Java in OSR mode and can adopt the popup into a Java browser, `OnBeforePopupAborted` (see "OSR popups adopted by a Java browser"). |
 | `java/org/cef/handler/CefLifeSpanHandler.java` | Default methods `onBeforePopupBrowser` / `onPopupBrowserAborted`. |
 | `java/org/cef/browser/CefBrowser_N.java` | Package-private `onNativeCreated()` hook. |

@@ -34,6 +34,7 @@ import java.awt.event.ComponentAdapter;
 import java.awt.event.ComponentEvent;
 import java.awt.event.FocusEvent;
 import java.awt.event.FocusListener;
+import java.awt.event.HierarchyEvent;
 import java.awt.event.KeyEvent;
 import java.awt.event.KeyListener;
 import java.awt.event.MouseEvent;
@@ -69,7 +70,8 @@ import javax.swing.Timer;
  * The visibility of this class is "package". To create a new CefBrowser
  * instance, please use CefBrowserFactory.
  */
-class CefBrowserOsrBuffered extends CefBrowser_N implements CefRenderHandler, CefScrollConfigurable {
+class CefBrowserOsrBuffered extends CefBrowser_N
+        implements CefRenderHandler, CefScrollConfigurable, CefViewSizeHint {
     private static final int DEFAULT_WHEEL_SCROLL_PIXELS = 100;
     // Frame buffers grow in steps so a live resize reuses the same pixel array
     // instead of allocating a full-frame image (a G1 humongous object) per frame.
@@ -77,6 +79,13 @@ class CefBrowserOsrBuffered extends CefBrowser_N implements CefRenderHandler, Ce
     // At most one WasResized per frame interval while the component is being
     // dragged; the trailing call always delivers the final size.
     private static final int RESIZE_COALESCE_MS = 16;
+    // After the last WasResized, how long to wait for a frame of the new size
+    // before assuming the resize was lost and sending it again.
+    private static final int RESIZE_VERIFY_MS = 150;
+    private static final int MAX_RESIZE_RETRIES = 3;
+    // While no frame at all has arrived since the last WasResized, keep waiting
+    // (a slow or throttled renderer is not a lost resize) up to this budget.
+    private static final long RESIZE_WAIT_BUDGET_NANOS = 3_000_000_000L;
 
     private volatile int scrollPixelsPerNotch_ = DEFAULT_WHEEL_SCROLL_PIXELS;
 
@@ -85,10 +94,22 @@ class CefBrowserOsrBuffered extends CefBrowser_N implements CefRenderHandler, Ce
     private BufferedCanvas canvas_;
     private boolean justCreated_ = false;
     private Timer resizeTimer_;
+    private Timer resizeVerifyTimer_;
+    private int resizeRetries_ = 0;
     private long lastResizeSentNanos_ = 0L;
-    private Rectangle browser_rect_ = new Rectangle(0, 0, 1, 1); // Work around CEF issue #1437.
+    // Immutable snapshot: written on the EDT, read on the CEF UI thread. Never
+    // mutate it in place; replace the reference. 1x1 works around CEF issue #1437.
+    private volatile Rectangle viewRect_ = new Rectangle(0, 0, 1, 1);
+    private volatile int expectedFrameWidth_ = 0;
+    private volatile int expectedFrameHeight_ = 0;
+    private volatile int lastFrameWidth_ = 0;
+    private volatile int lastFrameHeight_ = 0;
+    private volatile long lastFrameNanos_ = 0L;
+    private volatile long resizeSentNanos_ = 0L;
+    private volatile boolean resizeApplied_ = true;
+    private long resizeWaitStartNanos_ = 0L;
     private Point screenPoint_ = new Point(0, 0);
-    private double scaleFactor_ = 1.0;
+    private volatile double scaleFactor_ = 1.0;
     private int depth = 32;
     private int depth_per_component = 8;
 
@@ -144,6 +165,19 @@ class CefBrowserOsrBuffered extends CefBrowser_N implements CefRenderHandler, Ce
     @Override
     void onNativeCreated() {
         if (!adoptedPopup_) {
+            // WasResized calls made before the native browser was bound were
+            // dropped, so the view may still be at the size CEF queried at
+            // creation. Push the current geometry once the browser exists.
+            SwingUtilities.invokeLater(() -> {
+                BufferedCanvas canvas = canvas_;
+                if (canvas != null && canvas.getWidth() > 0 && canvas.getHeight() > 0) {
+                    canvas.updateGeometry();
+                } else {
+                    Rectangle view = viewRect_;
+                    wasResized(view.width, view.height);
+                }
+                invalidate();
+            });
             return;
         }
         if (isCloseRequested()) {
@@ -159,7 +193,8 @@ class CefBrowserOsrBuffered extends CefBrowser_N implements CefRenderHandler, Ce
             if (canvas != null && canvas.getWidth() > 0 && canvas.getHeight() > 0) {
                 canvas.updateGeometry();
             } else {
-                wasResized(browser_rect_.width, browser_rect_.height);
+                Rectangle view = viewRect_;
+                wasResized(view.width, view.height);
             }
             invalidate();
             if (justCreated_) {
@@ -188,6 +223,18 @@ class CefBrowserOsrBuffered extends CefBrowser_N implements CefRenderHandler, Ce
     @Override
     public int getScrollPixelsPerNotch() {
         return scrollPixelsPerNotch_;
+    }
+
+    @Override
+    public void setViewSizeHint(int width, int height) {
+        if (width <= 0 || height <= 0) {
+            return;
+        }
+        BufferedCanvas canvas = canvas_;
+        if (canvas != null && canvas.getWidth() > 0 && canvas.getHeight() > 0) {
+            return;
+        }
+        viewRect_ = new Rectangle(0, 0, width, height);
     }
 
     @Override
@@ -253,21 +300,88 @@ class CefBrowserOsrBuffered extends CefBrowser_N implements CefRenderHandler, Ce
     }
 
     private void flushResize() {
+        resizeRetries_ = 0;
+        long now = System.nanoTime();
+        resizeWaitStartNanos_ = now;
+        resizeSentNanos_ = now;
+        resizeApplied_ = false;
+        sendResize();
+    }
+
+    private void sendResize() {
         lastResizeSentNanos_ = System.nanoTime();
-        wasResized(browser_rect_.width, browser_rect_.height);
+        Rectangle view = viewRect_;
+        double sf = scaleFactor_ <= 0 ? 1.0 : scaleFactor_;
+        expectedFrameWidth_ = (int) Math.ceil(view.width * sf);
+        expectedFrameHeight_ = (int) Math.ceil(view.height * sf);
+        wasResized(view.width, view.height);
+        scheduleResizeVerify();
+    }
+
+    private void scheduleResizeVerify() {
+        if (resizeVerifyTimer_ == null) {
+            resizeVerifyTimer_ = new Timer(RESIZE_VERIFY_MS, e -> verifyResize());
+            resizeVerifyTimer_.setRepeats(false);
+        }
+        resizeVerifyTimer_.restart();
+    }
+
+    /**
+     * A resize can be lost (sent before the native browser was bound, or
+     * swallowed while CEF held a previous resize). Left alone, Chromium keeps
+     * laying the page out at the old size: the page looks cropped and cannot
+     * scroll. Re-send until a frame of the expected size arrives. While no
+     * frame at all has arrived since the last send, the renderer is just slow:
+     * keep waiting (with an invalidate to request one) instead of re-sending.
+     */
+    private void verifyResize() {
+        if (isClosed()) {
+            return;
+        }
+        BufferedCanvas canvas = canvas_;
+        if (canvas == null || !canvas.isShowing()) {
+            return;
+        }
+        if (matchesExpectedFrame(lastFrameWidth_, lastFrameHeight_)) {
+            return;
+        }
+        boolean frameSinceSend = lastFrameNanos_ >= lastResizeSentNanos_;
+        if (!frameSinceSend
+                && System.nanoTime() - resizeWaitStartNanos_ < RESIZE_WAIT_BUDGET_NANOS) {
+            invalidate();
+            scheduleResizeVerify();
+            return;
+        }
+        if (resizeRetries_ >= MAX_RESIZE_RETRIES) {
+            return;
+        }
+        resizeRetries_++;
+        if (PaintStats.ENABLED) {
+            System.out.printf("[JCEF OSR] resize retry %d: frame %dx%d, expected %dx%d%n",
+                    resizeRetries_, lastFrameWidth_, lastFrameHeight_, expectedFrameWidth_,
+                    expectedFrameHeight_);
+        }
+        sendResize();
+        invalidate();
+    }
+
+    private boolean matchesExpectedFrame(int width, int height) {
+        return Math.abs(width - expectedFrameWidth_) <= 1
+                && Math.abs(height - expectedFrameHeight_) <= 1;
     }
 
     // CefRenderHandler
 
     @Override
     public Rectangle getViewRect(CefBrowser browser) {
-        return browser_rect_;
+        return new Rectangle(viewRect_);
     }
 
     @Override
     public boolean getScreenInfo(CefBrowser browser, CefScreenInfo screenInfo) {
-        screenInfo.Set(scaleFactor_, depth, depth_per_component, false, browser_rect_.getBounds(),
-                browser_rect_.getBounds());
+        Rectangle view = viewRect_;
+        screenInfo.Set(scaleFactor_, depth, depth_per_component, false, view.getBounds(),
+                view.getBounds());
         return true;
     }
 
@@ -310,8 +424,9 @@ class CefBrowserOsrBuffered extends CefBrowser_N implements CefRenderHandler, Ce
 
     private Rectangle clampPopupToView(Rectangle original) {
         Rectangle rc = new Rectangle(original);
-        int viewWidth = browser_rect_.width;
-        int viewHeight = browser_rect_.height;
+        Rectangle view = viewRect_;
+        int viewWidth = view.width;
+        int viewHeight = view.height;
         if (rc.x < 0) rc.x = 0;
         if (rc.y < 0) rc.y = 0;
         if (rc.x + rc.width > viewWidth) rc.x = viewWidth - rc.width;
@@ -365,6 +480,16 @@ class CefBrowserOsrBuffered extends CefBrowser_N implements CefRenderHandler, Ce
             mainStride_ = mainImage_.getWidth();
             mainWidth_ = width;
             mainHeight_ = height;
+            lastFrameWidth_ = width;
+            lastFrameHeight_ = height;
+        }
+        lastFrameNanos_ = System.nanoTime();
+        if (!resizeApplied_ && matchesExpectedFrame(width, height)) {
+            resizeApplied_ = true;
+            if (PaintStats.ENABLED) {
+                System.out.printf("[JCEF OSR] resize %dx%d applied after %d ms%n", width, height,
+                        (lastFrameNanos_ - resizeSentNanos_) / 1_000_000L);
+            }
         }
         copyRows(asIntBuffer(buffer), mainData_, mainStride_, width, height,
                 resized ? null : dirtyRects);
@@ -671,6 +796,16 @@ class CefBrowserOsrBuffered extends CefBrowser_N implements CefRenderHandler, Ce
                 }
             });
 
+            // A tab that was hidden while its resize was pending skipped the
+            // verification; resume it once the component is on screen again.
+            addHierarchyListener(e -> {
+                if ((e.getChangeFlags() & HierarchyEvent.SHOWING_CHANGED) != 0 && isShowing()
+                        && !resizeApplied_) {
+                    resizeWaitStartNanos_ = System.nanoTime();
+                    scheduleResizeVerify();
+                }
+            });
+
             MouseListener mouseListener = new MouseListener() {
                 @Override
                 public void mousePressed(MouseEvent e) {
@@ -776,7 +911,7 @@ class CefBrowserOsrBuffered extends CefBrowser_N implements CefRenderHandler, Ce
         private void updateGeometry() {
             int width = Math.max(1, getWidth());
             int height = Math.max(1, getHeight());
-            browser_rect_.setBounds(0, 0, width, height);
+            viewRect_ = new Rectangle(0, 0, width, height);
             updateScreenPoint();
             updateScaleFactor();
             requestResize();
