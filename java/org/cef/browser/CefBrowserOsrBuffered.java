@@ -634,6 +634,9 @@ class CefBrowserOsrBuffered extends CefBrowser_N
     public boolean onCursorChange(CefBrowser browser, final int cursorType) {
         SwingUtilities.invokeLater(() -> {
             BufferedCanvas canvas = canvas_;
+            if (canvas != null) {
+                canvas.rememberCursorType(cursorType);
+            }
             if (canvas == null || canvas.isAutoScrolling()) {
                 // While middle-button autoscroll is active the native layer
                 // reports the default cursor (the panning types are not mapped),
@@ -734,15 +737,31 @@ class CefBrowserOsrBuffered extends CefBrowser_N
     private final class BufferedCanvas extends JComponent {
         private boolean added_ = false;
         private boolean autoScroll_ = false;
+        private int lastCursorType_ = Cursor.DEFAULT_CURSOR;
 
         boolean isAutoScrolling() {
             return autoScroll_;
         }
 
+        void rememberCursorType(int cursorType) {
+            lastCursorType_ = cursorType;
+        }
+
+        private boolean isOverClickable() {
+            return lastCursorType_ == Cursor.HAND_CURSOR;
+        }
+
         private void setAutoScrollCursor(boolean on) {
             autoScroll_ = on;
-            setCursor(on ? Cursor.getPredefinedCursor(Cursor.MOVE_CURSOR)
-                         : Cursor.getDefaultCursor());
+            if (on) {
+                setCursor(Cursor.getPredefinedCursor(Cursor.MOVE_CURSOR));
+                return;
+            }
+            try {
+                setCursor(Cursor.getPredefinedCursor(lastCursorType_));
+            } catch (RuntimeException ignored) {
+                setCursor(Cursor.getDefaultCursor());
+            }
         }
 
         BufferedCanvas() {
@@ -816,10 +835,11 @@ class CefBrowserOsrBuffered extends CefBrowser_N
                     // unreliable for a lightweight component embedded in Swing.
                     CefBrowserOsrBuffered.this.setFocus(true);
                     if (e.getButton() == MouseEvent.BUTTON2) {
-                        // Middle click toggles Chromium autoscroll; mirror its
-                        // four-way cursor since the native panning cursor is not
-                        // forwarded in OSR mode.
-                        setAutoScrollCursor(!autoScroll_);
+                        if (autoScroll_) {
+                            setAutoScrollCursor(false);
+                        } else if (!isOverClickable()) {
+                            setAutoScrollCursor(true);
+                        }
                     } else if (autoScroll_) {
                         setAutoScrollCursor(false);
                     }

@@ -173,6 +173,22 @@ a new size, and to send one `WasResized` per AWT resize event.
   created before its component is laid out (e.g. a pre-warmed one) a real view
   size instead of 1x1, so its first page is laid out at the right size.
 
+### Buffered OSR middle-click autoscroll cursor
+
+The native layer does not map Chromium's panning cursors, so
+`CefBrowserOsrBuffered` mirrors middle-button autoscroll with its own four-way
+cursor. It used to toggle that cursor on every middle press, even over links,
+where Chromium opens the link instead of autoscrolling; the cursor then stayed
+stuck and the flag drifted out of step with Chromium.
+
+- The canvas remembers the last cursor type reported by `onCursorChange`, even
+  while autoscroll is active.
+- A middle press only turns autoscroll on when that cursor is not
+  `HAND_CURSOR` (links and clickable elements); a middle press while autoscroll
+  is active turns it off.
+- Leaving autoscroll restores the last Chromium cursor instead of the default
+  one.
+
 ### Buffered OSR paint performance
 
 `CefBrowserOsrBuffered` used to spend most of the EDT time per frame in Java2D
