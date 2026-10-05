@@ -28,6 +28,8 @@ import java.awt.AWTEvent;
 import java.awt.event.AWTEventListener;
 import java.awt.event.ActionEvent;
 import java.awt.event.ActionListener;
+import java.awt.event.ComponentAdapter;
+import java.awt.event.ComponentEvent;
 import java.awt.event.FocusEvent;
 import java.awt.event.FocusListener;
 import java.awt.event.HierarchyBoundsListener;
@@ -253,6 +255,7 @@ class CefBrowserWr extends CefBrowser_N {
                 if (removed_) {
                     setParent(getWindowHandle(this), canvas_);
                     removed_ = false;
+                    SwingUtilities.invokeLater(() -> doUpdate());
                 }
             }
 
@@ -279,6 +282,17 @@ class CefBrowserWr extends CefBrowser_N {
             // right afterwards, which is visible as flicker whenever a sibling
             // Swing component triggers a relayout.
             canvas_.setIgnoreRepaint(true);
+            canvas_.addComponentListener(new ComponentAdapter() {
+                @Override
+                public void componentResized(ComponentEvent event) {
+                    doUpdate();
+                }
+
+                @Override
+                public void componentMoved(ComponentEvent event) {
+                    doUpdate();
+                }
+            });
             ((JPanel) component_).add(canvas_, BorderLayout.CENTER);
             if (OS.isLinux()) {
                 installPointerFocus();
@@ -452,6 +466,10 @@ class CefBrowserWr extends CefBrowser_N {
 
     private void doUpdate() {
         if (isClosed()) return;
+        if (component_.getGraphicsConfiguration() != null) {
+            scaleFactor_ = component_.getGraphicsConfiguration()
+                    .getDefaultTransform().getScaleX();
+        }
 
         Rectangle vr = ((JPanel) component_).getVisibleRect();
         Rectangle clipping = new Rectangle((int) (vr.getX() * scaleFactor_),

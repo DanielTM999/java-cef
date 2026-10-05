@@ -106,6 +106,12 @@ embedders that prefer the native surface over `OFFSCREEN_BUFFERED`:
 
 Neither affects `OFFSCREEN` or `OFFSCREEN_BUFFERED`.
 
+The windowed browser also refreshes native bounds when its hosting Canvas is
+resized or moved. Reparenting schedules a bounds refresh after AWT has attached
+the component, and each refresh reads the current display scale from the AWT
+graphics configuration. This keeps the Chromium child window aligned with a
+detached tab during live resize and moves between displays with different DPI.
+
 ### Windowed-rendering focus hand-back (Windows)
 
 `CefBrowserHost::SetFocus(false)` only blurs the web contents — the native
