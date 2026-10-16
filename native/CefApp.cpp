@@ -12,6 +12,7 @@
 #include "context.h"
 #include "jcef_version.h"
 #include "jni_util.h"
+#include "process_priority.h"
 #include "scheme_handler_factory.h"
 #include "util.h"
 #include "window_branding.h"
@@ -116,6 +117,13 @@ Java_org_cef_CefApp_N_1Startup(JNIEnv* env,
   Context::Create();
 #endif  // defined(OS_MACOSX)
   return JNI_TRUE;
+}
+
+JNIEXPORT jint JNICALL
+Java_org_cef_CefApp_N_1SetSubprocessPriority(JNIEnv*,
+                                             jclass,
+                                             jboolean background) {
+  return process_priority::ApplyToSubprocesses(background == JNI_TRUE);
 }
 
 JNIEXPORT jboolean JNICALL

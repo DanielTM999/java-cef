@@ -122,6 +122,7 @@ set(JCEF_SRCS
   pdf_print_callback.h
   print_handler.cpp
   print_handler.h
+  process_priority.h
   render_handler.cpp
   render_handler.h
   request_context_handler.cpp
@@ -172,6 +173,7 @@ set(JCEF_SRCS_WINDOWS
   temp_window_win.h
   util_win.cpp
   window_branding_win.cpp
+  process_priority_win.cpp
   )
 APPEND_PLATFORM_SOURCES(JCEF_SRCS)
 source_group(jcef FILES ${JCEF_SRCS})

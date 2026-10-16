@@ -8,6 +8,7 @@
 
 #include "client_app.h"
 #include "jni_util.h"
+#include "process_priority.h"
 #include "window_branding.h"
 
 #if defined(OS_MACOSX)
@@ -236,6 +237,7 @@ bool Context::Initialize(JNIEnv* env,
   // Orion fork: embedder branding (icon / AppUserModelID) for the native
   // windows Chromium creates itself. No-op outside Windows.
   window_branding::Configure(env, jsettings);
+  process_priority::Configure(CefString(&settings.browser_subprocess_path));
 
   CefRefPtr<ClientApp> client_app(
       new ClientApp(CefString(&settings.cache_path), env, appHandler));

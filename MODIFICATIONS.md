@@ -239,6 +239,24 @@ hooked from `context.cpp` (`Configure` before `CefInitialize`,
 (`OnAfterCreated`) and the new static `CefApp.N_BrandExecutable`. AWT windows
 (`SunAwt*` classes) are never touched. Linux and macOS are no-ops.
 
+### Subprocess priority
+
+`CefApp.setSubprocessesInBackground(boolean)` lets the embedder push Chromium's
+subprocesses (renderer, GPU, network, utility) to the background while its
+browser UI is hidden, and restore them when the UI is visible again. In the
+background they run with `BELOW_NORMAL_PRIORITY_CLASS` and
+`MEMORY_PRIORITY_LOW`, so under memory pressure Windows trims their pages
+before the embedding application's. Only direct children of the current
+process whose executable matches `browser_subprocess_path` are touched; other
+child processes of the embedder are never changed. It returns the number of
+subprocesses changed, or `-1` before `CefApp` is initialized, on other
+platforms, or with a native library that predates the call.
+
+Native side: `native/process_priority.h` / `native/process_priority_win.cpp`
+(Toolhelp snapshot, `SetPriorityClass`, `SetProcessInformation`), configured
+from `context.cpp` before `CefInitialize` and exposed through the static
+`CefApp.N_SetSubprocessPriority`. Linux and macOS are no-ops.
+
 ### OSR popups adopted by a Java browser
 
 Upstream `LifeSpanHandler::OnBeforePopup` returns `true` (cancel) for every
@@ -352,6 +370,7 @@ run downloads the runtime again instead of failing forever.
 | `java/tests/junittests/CefInitializationModeTest.java` | Pure-Java unit tests for mode resolution / platform fallback. |
 | `java/tests/orion/OrionAsyncInitExample.java` | Runnable Swing demo comparing `LEGACY_EDT` vs `DEDICATED_CEF_THREAD`. |
 | `native/window_branding.h`, `native/window_branding_win.cpp` | Embedder icon / AppUserModelID for Chromium-owned windows and helper executable branding (Windows). |
+| `native/process_priority.h`, `native/process_priority_win.cpp` | Background / normal priority for Chromium subprocesses (Windows); see "Subprocess priority". |
 | `MODIFICATIONS.md` | This file. |
 | `docs/BUILDING.md` | Build/packaging/workflow guide and Orion integration notes. |
 | `scripts/package-portable.sh` | Build the Java API jar with shaded JOGL/GlueGen dependencies, sources jar, POM and `SHA256SUMS.txt`. |
@@ -365,10 +384,10 @@ run downloads the runtime again instead of failing forever.
 |---|---|
 | `java/org/cef/CefSettings.java` | Added `CefInitializationMode` enum + `initialization_mode` field; `app_icon_path`, `app_user_model_id`, `app_display_name`, `helper_executable_name` branding fields. |
 | `java/org/cef/browser/CefBrowserOsrBuffered.java` | Opaque `TYPE_INT_RGB` frames, device-space 1:1 blit on scaled displays, opt-in paint stats; reusable strided frame buffers, coalesced and self-verifying `WasResized`, `CefViewSizeHint` (see "Buffered OSR live resize"); popup-host mode (see "OSR popups adopted by a Java browser"). |
-| `native/context.cpp`, `native/life_span_handler.{cpp,h}`, `native/CefApp.{cpp,h}`, `native/CMakeLists.txt` | Branding hooks and `N_BrandExecutable` (see "Embedder branding"); `OnBeforePopup` always reaches Java in OSR mode and can adopt the popup into a Java browser, `OnBeforePopupAborted` (see "OSR popups adopted by a Java browser"). |
+| `native/context.cpp`, `native/life_span_handler.{cpp,h}`, `native/CefApp.{cpp,h}`, `native/CMakeLists.txt` | Branding hooks and `N_BrandExecutable` (see "Embedder branding"); subprocess priority hook and `N_SetSubprocessPriority` (see "Subprocess priority"); `OnBeforePopup` always reaches Java in OSR mode and can adopt the popup into a Java browser, `OnBeforePopupAborted` (see "OSR popups adopted by a Java browser"). |
 | `java/org/cef/handler/CefLifeSpanHandler.java` | Default methods `onBeforePopupBrowser` / `onPopupBrowserAborted`. |
 | `java/org/cef/browser/CefBrowser_N.java` | Package-private `onNativeCreated()` hook. |
-| `java/org/cef/CefApp.java` | Mode resolution; dedicated owner-thread dispatch for pre-init / init / message-loop / shutdown; `initializeAsync()` / `createClientAsync()`; one-shot native-init guard; bundled-native library path lookup; logging; branded Windows helper resolution. Legacy EDT path preserved. |
+| `java/org/cef/CefApp.java` | Mode resolution; dedicated owner-thread dispatch for pre-init / init / message-loop / shutdown; `initializeAsync()` / `createClientAsync()`; one-shot native-init guard; bundled-native library path lookup; logging; branded Windows helper resolution; `setSubprocessesInBackground`. Legacy EDT path preserved. |
 | `java/org/cef/SystemBootstrap.java` | Default loader can extract embedded per-OS native runtime resources, download missing runtime zips from a configurable provider, report download progress, and load native libraries from the extracted cache; verifies download length and per-entry extracted sizes, and drops the cache marker when a runtime library fails to load; versioned runtime cache with in-use lock and cleanup of other versions. |
 | `java/org/cef/browser/CefBrowserFactory.java` | Added `create(...)` overload taking a `CefRendering` mode; legacy boolean overload delegates to it; `createPopupHost` / `notifyNativeCreated`. |
 | `java/org/cef/CefClient.java` | Added `createBrowser(...)` overloads taking a `CefRendering` mode; `createPopupBrowser`; dispatch of `onBeforePopupBrowser` / `onPopupBrowserAborted`. |
@@ -384,8 +403,8 @@ run downloads the runtime again instead of failing forever.
 - `LICENSE.txt` and all copyright headers.
 - Native C++ except for the windowed-rendering `WS_CLIPCHILDREN` and focus
   hand-back changes in `native/CefBrowser_N.cpp`, the Windows multi-threaded
-  message loop in `native/context.cpp`, and the embedder branding hooks listed
-  above.
+  message loop in `native/context.cpp`, and the embedder branding and
+  subprocess priority hooks listed above.
 - Upstream behavior when `initialization_mode` is left at its default.
 
 ## Distribution model

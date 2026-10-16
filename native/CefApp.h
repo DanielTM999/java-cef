@@ -21,6 +21,15 @@ JNIEXPORT jboolean JNICALL Java_org_cef_CefApp_N_1BrandExecutable(JNIEnv*,
 
 /*
  * Class:     org_cef_CefApp
+ * Method:    N_SetSubprocessPriority
+ * Signature: (Z)I
+ */
+JNIEXPORT jint JNICALL Java_org_cef_CefApp_N_1SetSubprocessPriority(JNIEnv*,
+                                                                    jclass,
+                                                                    jboolean);
+
+/*
+ * Class:     org_cef_CefApp
  * Method:    N_Startup
  * Signature: (Ljava/lang/String;)Z
  */

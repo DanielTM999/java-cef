@@ -323,6 +323,15 @@ public class CefApp extends CefAppHandlerAdapter {
         return null;
     }
 
+    public final int setSubprocessesInBackground(boolean background) {
+        if (getState() != CefAppState.INITIALIZED) return -1;
+        try {
+            return N_SetSubprocessPriority(background);
+        } catch (UnsatisfiedLinkError ule) {
+            return -1;
+        }
+    }
+
     /**
      * Returns the current state of CefApp.
      * @return current state.
@@ -982,6 +991,7 @@ public class CefApp extends CefAppHandlerAdapter {
     private final native boolean N_Initialize(CefAppHandler appHandler, CefSettings settings);
     private final native void N_Shutdown();
     private final native void N_DoMessageLoopWork();
+    private static native int N_SetSubprocessPriority(boolean background);
     private static native boolean N_BrandExecutable(
             String source, String target, String iconPath, String description);
     private final native CefVersion N_GetVersion();
