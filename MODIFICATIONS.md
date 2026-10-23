@@ -112,6 +112,33 @@ the component, and each refresh reads the current display scale from the AWT
 graphics configuration. This keeps the Chromium child window aligned with a
 detached tab during live resize and moves between displays with different DPI.
 
+Resizes no longer flash while panels open or splitters move:
+
+- `CefBrowserWr.doUpdate()` runs on every Swing paint, resize and move of the
+  browser or its ancestors. On Windows it now remembers the size and window
+  region it last pushed and skips the native calls when neither changed.
+  Re-applying an unchanged region with `SetWindowRgn(..., TRUE)` made Windows
+  erase and repaint the Canvas and the browser on every sibling repaint. The
+  remembered geometry is cleared on reparent and once the native browser is
+  bound.
+- On Windows the browser is sized from `doUpdate()` (after AWT has resized the
+  Canvas) instead of from `JPanel.setBounds`, and `util::SetWindowSize` sizes
+  the browser window to the Canvas client area, so Java's rounding of scaled
+  sizes cannot leave a strip of the Canvas uncovered. Unchanged sizes are
+  skipped.
+- `util::SetWindowBounds` compares the requested region with the current one
+  (`EqualRgn`) and only redraws when it changes. A clip that covers the whole
+  Canvas is set as no region.
+- `util::SetParent` applies `WS_CLIPCHILDREN` to the new Canvas chain (as at
+  creation, now shared through `util::EnsureClipChildren`) and fills the new
+  Canvas right away.
+- `CefBrowserSettings.background_color` (`java.awt.Color`, default `null` =
+  white) sets the color Chromium paints before the page draws and in areas a
+  resize exposes; non-transparent browsers force it opaque. The windowed Canvas
+  is erased with the same color, and adopted OSR popups keep the opener's
+  color. An embedder with a dark theme passes its background to avoid white
+  flashes.
+
 ### Windowed-rendering focus hand-back (Windows)
 
 `CefBrowserHost::SetFocus(false)` only blurs the web contents — the native
@@ -119,8 +146,11 @@ keyboard focus stays on Chromium's child window. An embedder that puts Swing
 input fields next to a windowed browser therefore cannot get keystrokes back:
 the field appears focused to Java while Windows keeps routing keys to Chromium.
 
-`N_SetFocus` now hands the native focus back to the AWT parent window when
-`enable` is `false` and the browser is windowed. It attaches to the parent's
+`N_SetFocus` now hands the native focus back to the AWT top-level window when
+`enable` is `false` and the browser is windowed. Handing it to the hosting
+Canvas made the Canvas the Java focus owner, which pulled the focus out of the
+Swing field that had just asked for it; on Windows the Canvas is also no longer
+focusable. It attaches to the parent's
 input queue first (`AttachThreadInput`), because the AWT windows are owned by
 the toolkit thread rather than by the caller, and only moves the focus when it
 currently sits on the browser window or one of its children. Windowless
@@ -398,17 +428,21 @@ taken verbatim so the eventual upstream merge is a no-op:
 
 | File | Change |
 |---|---|
+| `java/org/cef/CefBrowserSettings.java` | `background_color` (see "Windowed-rendering flicker mitigation"). |
+| `java/org/cef/browser/CefDevToolsClient.java` | Upstream #533 (see "Upstream fixes ported ahead of merge"). |
+| `native/keyboard_handler.cpp`, `native/jni_util.{cpp,h}`, `native/jni_scoped_helpers.{cpp,h}` | Upstream #540 and #550 (see "Upstream fixes ported ahead of merge"). |
+| `native/util.h`, `native/util_win.cpp` | Windows: change-only window region, Canvas-sized browser window, clip children and fill on reparent. |
 | `java/org/cef/CefSettings.java` | Added `CefInitializationMode` enum + `initialization_mode` field; `app_icon_path`, `app_user_model_id`, `app_display_name`, `helper_executable_name` branding fields. |
 | `java/org/cef/browser/CefBrowserOsrBuffered.java` | Opaque `TYPE_INT_RGB` frames, device-space 1:1 blit on scaled displays, opt-in paint stats; reusable strided frame buffers, coalesced and self-verifying `WasResized`, `CefViewSizeHint` (see "Buffered OSR live resize"); popup-host mode (see "OSR popups adopted by a Java browser"). |
 | `native/context.cpp`, `native/life_span_handler.{cpp,h}`, `native/CefApp.{cpp,h}`, `native/CMakeLists.txt` | Branding hooks and `N_BrandExecutable` (see "Embedder branding"); subprocess priority hook and `N_SetSubprocessPriority` (see "Subprocess priority"); `OnBeforePopup` always reaches Java in OSR mode and can adopt the popup into a Java browser, `OnBeforePopupAborted` (see "OSR popups adopted by a Java browser"). |
 | `java/org/cef/handler/CefLifeSpanHandler.java` | Default methods `onBeforePopupBrowser` / `onPopupBrowserAborted`. |
-| `java/org/cef/browser/CefBrowser_N.java` | Package-private `onNativeCreated()` hook. |
+| `java/org/cef/browser/CefBrowser_N.java` | Package-private `onNativeCreated()` hook; protected `getBrowserSettings()`. |
 | `java/org/cef/CefApp.java` | Mode resolution; dedicated owner-thread dispatch for pre-init / init / message-loop / shutdown; `initializeAsync()` / `createClientAsync()`; one-shot native-init guard; bundled-native library path lookup; logging; branded Windows helper resolution; `setSubprocessesInBackground`. Legacy EDT path preserved. |
 | `java/org/cef/SystemBootstrap.java` | Default loader can extract embedded per-OS native runtime resources, download missing runtime zips from a configurable provider, report download progress, and load native libraries from the extracted cache; verifies download length and per-entry extracted sizes, and drops the cache marker when a runtime library fails to load; versioned runtime cache with in-use lock and cleanup of other versions. |
 | `java/org/cef/browser/CefBrowserFactory.java` | Added `create(...)` overload taking a `CefRendering` mode; legacy boolean overload delegates to it; `createPopupHost` / `notifyNativeCreated`. |
 | `java/org/cef/CefClient.java` | Added `createBrowser(...)` overloads taking a `CefRendering` mode; `createPopupBrowser`; dispatch of `onBeforePopupBrowser` / `onPopupBrowserAborted`. |
-| `java/org/cef/browser/CefBrowserWr.java` | `setIgnoreRepaint(true)` on the hosting `Canvas` to cut windowed-rendering flicker; pointer-driven keyboard focus for windowed browsers on Linux/X11. |
-| `native/CefBrowser_N.cpp` | Windows only: sets `WS_CLIPCHILDREN` on the AWT parent window chain when creating a windowed browser; `N_SetFocus(false)` hands the native keyboard focus back to the AWT parent window. |
+| `java/org/cef/browser/CefBrowserWr.java` | `setIgnoreRepaint(true)` on the hosting `Canvas` to cut windowed-rendering flicker; change-only native geometry updates, non-focusable Canvas and background color on Windows; pointer-driven keyboard focus for windowed browsers on Linux/X11. |
+| `native/CefBrowser_N.cpp` | Windows only: sets `WS_CLIPCHILDREN` on the AWT parent window chain when creating a windowed browser; `N_SetFocus(false)` hands the native keyboard focus back to the AWT top-level window. All platforms: `CefBrowserSettings.background_color`. |
 | `tools/compile.sh`, `tools/compile.bat` | Also compile the new `tests/orion` package; Windows compilation now uses an argument file so `javac` receives expanded source paths reliably. |
 | `tools/make_jar.bat` | Packages class directories with `jar -C` instead of relying on Windows wildcard expansion. |
 | `CMakeLists.txt` | Added `JCEF_DOWNLOAD_CLANG_FORMAT=OFF` option so CI can avoid the Chromium `gsutil` / Python `six.moves` failure while configuring native builds. |
@@ -417,8 +451,9 @@ taken verbatim so the eventual upstream merge is a no-op:
 ## Not modified
 
 - `LICENSE.txt` and all copyright headers.
-- Native C++ except for the windowed-rendering `WS_CLIPCHILDREN` and focus
-  hand-back changes in `native/CefBrowser_N.cpp`, the Windows multi-threaded
+- Native C++ except for the windowed-rendering changes in
+  `native/CefBrowser_N.cpp` and `native/util_win.cpp`, the browser background
+  color, the ported upstream fixes, the Windows multi-threaded
   message loop in `native/context.cpp`, and the embedder branding and
   subprocess priority hooks listed above.
 - Upstream behavior when `initialization_mode` is left at its default.

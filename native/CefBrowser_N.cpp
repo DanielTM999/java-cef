@@ -975,22 +975,7 @@ void create(std::shared_ptr<JNIObjectsForCreate> objs,
     if (objs->canvas != nullptr) {
       parent = GetHwndOfCanvas(objs->canvas, env);
       // Orion fork addition. See MODIFICATIONS.md.
-      // Without WS_CLIPCHILDREN the AWT parent windows paint over the area
-      // occupied by the browser's child window before Chromium repaints it,
-      // which shows up as flicker when sibling Swing components relayout.
-      for (HWND ancestor = parent; ancestor != nullptr;) {
-        LONG_PTR style = GetWindowLongPtr(ancestor, GWL_STYLE);
-        if (style == 0) {
-          break;
-        }
-        if ((style & WS_CLIPCHILDREN) == 0) {
-          SetWindowLongPtr(ancestor, GWL_STYLE, style | WS_CLIPCHILDREN);
-        }
-        if ((style & WS_CHILD) == 0) {
-          break;
-        }
-        ancestor = GetParent(ancestor);
-      }
+      util::EnsureClipChildren(parent);
     } else {
       // Do not activate hidden browser windows on creation.
       windowInfo.ex_style |= WS_EX_NOACTIVATE;
@@ -1027,6 +1012,22 @@ void create(std::shared_ptr<JNIObjectsForCreate> objs,
       objs->jbrowserSettings != nullptr) {  // Dev-tools settings are null
     GetJNIFieldInt(env, cefBrowserSettings, objs->jbrowserSettings,
                    "windowless_frame_rate", &settings.windowless_frame_rate);
+
+    // Orion fork addition. See MODIFICATIONS.md.
+    jobject jcolor = nullptr;
+    if (GetJNIFieldObject(env, cefBrowserSettings, objs->jbrowserSettings,
+                          "background_color", &jcolor, "Ljava/awt/Color;")) {
+      ScopedJNIObjectLocal color(env, jcolor);
+      jint argb = 0;
+      JNI_CALL_METHOD(env, color, "getRGB", "()I", Int, argb);
+      cef_color_t background = static_cast<cef_color_t>(argb);
+      if (transparent == JNI_FALSE) {
+        background = CefColorSetARGB(255, CefColorGetR(background),
+                                     CefColorGetG(background),
+                                     CefColorGetB(background));
+      }
+      settings.background_color = background;
+    }
   }
 
   CefRefPtr<CefBrowser> browserObj;
@@ -1539,13 +1540,21 @@ Java_org_cef_browser_CefBrowser_1N_N_1SetFocus(JNIEnv* env,
   // For windowed rendering SetFocus(false) only blurs the web contents: the
   // native keyboard focus stays on Chromium's child window, so the embedding
   // Java window keeps receiving no keystrokes. Hand the native focus back to
-  // the AWT parent window, attaching to its input queue because the window is
-  // owned by the AWT toolkit thread.
+  // the AWT top-level window, attaching to its input queue because the window
+  // is owned by the AWT toolkit thread. The top-level window keeps the Java
+  // focus owner as it is; the Canvas hosting the browser would become the
+  // focus owner itself and pull the focus out of the Swing field that asked
+  // for it.
   if (enable == JNI_FALSE) {
     CefRefPtr<CefBrowserHost> host = browser->GetHost();
     if (!host->IsWindowRenderingDisabled()) {
       HWND browserWindow = host->GetWindowHandle();
-      HWND parentWindow = browserWindow ? GetParent(browserWindow) : nullptr;
+      HWND parentWindow =
+          browserWindow ? GetAncestor(browserWindow, GA_ROOT) : nullptr;
+      if (parentWindow == browserWindow ||
+          parentWindow == TempWindow::GetWindowHandle()) {
+        parentWindow = nullptr;
+      }
       if (parentWindow) {
         DWORD parentThread = GetWindowThreadProcessId(parentWindow, nullptr);
         DWORD currentThread = GetCurrentThreadId();

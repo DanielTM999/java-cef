@@ -150,7 +150,11 @@ bool LifeSpanHandler::AdoptPopup(JNIEnv* env,
   windowInfo.SetAsWindowless(kNullWindowHandle);
   // JCEF requires Alloy runtime style for browsers integrated into Java UI.
   windowInfo.runtime_style = CEF_RUNTIME_STYLE_ALLOY;
-  settings.background_color = CefColorSetARGB(255, 255, 255, 255);
+  // Keep the opener's opaque background (see CefBrowserSettings
+  // .background_color) so the adopted popup does not flash white.
+  if (CefColorGetA(settings.background_color) != 255) {
+    settings.background_color = CefColorSetARGB(255, 255, 255, 255);
+  }
   client = popupClient.get();
 
   auto router_configs = BrowserProcessHandler::GetMessageRouterConfigs();

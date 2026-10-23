@@ -310,27 +310,125 @@ CefWindowHandle GetWindowHandle(JNIEnv* env, jobject canvas) {
   return GetHwndOfCanvas(canvas, env);
 }
 
+// Orion fork addition. See MODIFICATIONS.md.
+// The browser window lives in an AWT Canvas whose window is resized by AWT
+// before Java forwards the new size. Sizing the browser from the Canvas client
+// area keeps both in step regardless of how Java rounded the scaled size.
+static bool GetCanvasClientSize(HWND browserHandle, int* width, int* height) {
+  HWND parent = GetParent(browserHandle);
+  if (parent == nullptr || parent == TempWindow::GetWindowHandle())
+    return false;
+  RECT client;
+  if (!GetClientRect(parent, &client) || client.right <= 0 ||
+      client.bottom <= 0) {
+    return false;
+  }
+  *width = client.right;
+  *height = client.bottom;
+  return true;
+}
+
+static void ResizeBrowserWindow(HWND browserHandle, int width, int height) {
+  RECT current;
+  if (GetWindowRect(browserHandle, &current) &&
+      current.right - current.left == width &&
+      current.bottom - current.top == height) {
+    return;
+  }
+  SetWindowPos(browserHandle, nullptr, 0, 0, width, height,
+               SWP_NOZORDER | SWP_NOMOVE | SWP_NOACTIVATE | SWP_NOOWNERZORDER);
+}
+
+void EnsureClipChildren(CefWindowHandle window) {
+  for (HWND ancestor = window; ancestor != nullptr;) {
+    LONG_PTR style = GetWindowLongPtr(ancestor, GWL_STYLE);
+    if (style == 0) {
+      break;
+    }
+    if ((style & WS_CLIPCHILDREN) == 0) {
+      SetWindowLongPtr(ancestor, GWL_STYLE, style | WS_CLIPCHILDREN);
+    }
+    if ((style & WS_CHILD) == 0) {
+      break;
+    }
+    ancestor = GetParent(ancestor);
+  }
+}
+
 void SetParent(CefWindowHandle browserHandle,
                CefWindowHandle parentHandle,
                base::OnceClosure callback) {
+  bool canvasParent = parentHandle != kNullWindowHandle;
   if (parentHandle == kNullWindowHandle)
     parentHandle = TempWindow::GetWindowHandle();
-  if (parentHandle != kNullWindowHandle && browserHandle != kNullWindowHandle)
+  if (parentHandle != kNullWindowHandle && browserHandle != kNullWindowHandle) {
     ::SetParent(browserHandle, parentHandle);
+    // Orion fork addition. See MODIFICATIONS.md.
+    // A reparent lands in a fresh Canvas window: give it the same clipping
+    // as at creation and fill it right away instead of waiting for the next
+    // resize from Java.
+    if (canvasParent) {
+      EnsureClipChildren(parentHandle);
+      int width = 0;
+      int height = 0;
+      if (GetCanvasClientSize(browserHandle, &width, &height)) {
+        ResizeBrowserWindow(browserHandle, width, height);
+      }
+    }
+  }
   std::move(callback).Run();
 }
 
 void SetWindowBounds(CefWindowHandle browserHandle,
                      const CefRect& contentRect) {
+  // Orion fork addition. See MODIFICATIONS.md.
+  // SetWindowRgn erases and repaints the Canvas and the browser inside it, so
+  // only touch the region when it actually changes. A clip that covers the
+  // whole Canvas is expressed as no region at all.
+  HWND parent = GetParent(browserHandle);
+  if (parent == nullptr || parent == TempWindow::GetWindowHandle())
+    return;
+
+  RECT client = {0, 0, 0, 0};
+  GetClientRect(parent, &client);
+  bool full = contentRect.x <= 0 && contentRect.y <= 0 &&
+              contentRect.x + contentRect.width >= client.right &&
+              contentRect.y + contentRect.height >= client.bottom;
+
+  HRGN current = CreateRectRgn(0, 0, 0, 0);
+  int currentType = GetWindowRgn(parent, current);
+
+  if (full) {
+    if (currentType == ERROR) {
+      DeleteObject(current);
+      return;
+    }
+    HRGN whole = CreateRectRgn(0, 0, client.right, client.bottom);
+    bool alreadyWhole = EqualRgn(current, whole) != FALSE;
+    DeleteObject(whole);
+    DeleteObject(current);
+    SetWindowRgn(parent, nullptr, alreadyWhole ? FALSE : TRUE);
+    return;
+  }
+
   HRGN contentRgn = CreateRectRgn(contentRect.x, contentRect.y,
                                   contentRect.x + contentRect.width,
                                   contentRect.y + contentRect.height);
-  SetWindowRgn(GetParent(browserHandle), contentRgn, TRUE);
+  bool unchanged =
+      currentType != ERROR && EqualRgn(current, contentRgn) != FALSE;
+  DeleteObject(current);
+  if (unchanged) {
+    DeleteObject(contentRgn);
+    return;
+  }
+  if (!SetWindowRgn(parent, contentRgn, TRUE))
+    DeleteObject(contentRgn);
 }
 
 void SetWindowSize(CefWindowHandle browserHandle, int width, int height) {
-  SetWindowPos(browserHandle, NULL, 0, 0, width, height,
-               SWP_NOZORDER | SWP_NOMOVE);
+  // Orion fork addition. See MODIFICATIONS.md.
+  GetCanvasClientSize(browserHandle, &width, &height);
+  ResizeBrowserWindow(browserHandle, width, height);
 }
 
 #endif  // USING_JAVA

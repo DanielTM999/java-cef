@@ -12,6 +12,7 @@ import org.cef.handler.CefWindowHandlerAdapter;
 
 import java.awt.BorderLayout;
 import java.awt.Canvas;
+import java.awt.Color;
 import java.awt.Component;
 import java.awt.Container;
 import java.awt.Dimension;
@@ -76,6 +77,13 @@ class CefBrowserWr extends CefBrowser_N {
     private long window_handle_ = 0;
     private boolean justCreated_ = false;
     private double scaleFactor_ = 1.0;
+    // Orion fork addition. See MODIFICATIONS.md.
+    // Geometry last pushed to the native windows on Windows. Every Swing paint
+    // reaches doUpdate(), and re-applying an unchanged window region makes
+    // Windows erase and repaint the browser. Cleared whenever the native side
+    // may not have it (native creation, reparent).
+    private Rectangle appliedClipping_ = null;
+    private Dimension appliedSize_ = null;
     private Timer delayedUpdate_ = new Timer(100, new ActionListener() {
         @Override
         public void actionPerformed(ActionEvent e) {
@@ -213,7 +221,11 @@ class CefBrowserWr extends CefBrowser_N {
             @Override
             public void setBounds(int x, int y, int width, int height) {
                 super.setBounds(x, y, width, height);
-                wasResized((int) (width * scaleFactor_), (int) (height * scaleFactor_));
+                // On Windows doUpdate() sizes the browser once the Canvas has its
+                // new bounds; sizing it from here runs ahead of the Canvas.
+                if (!OS.isWindows()) {
+                    wasResized((int) (width * scaleFactor_), (int) (height * scaleFactor_));
+                }
             }
 
             @Override
@@ -224,7 +236,9 @@ class CefBrowserWr extends CefBrowser_N {
             @Override
             public void setSize(int width, int height) {
                 super.setSize(width, height);
-                wasResized((int) (width * scaleFactor_), (int) (height * scaleFactor_));
+                if (!OS.isWindows()) {
+                    wasResized((int) (width * scaleFactor_), (int) (height * scaleFactor_));
+                }
             }
 
             @Override
@@ -255,6 +269,7 @@ class CefBrowserWr extends CefBrowser_N {
                 if (removed_) {
                     setParent(getWindowHandle(this), canvas_);
                     removed_ = false;
+                    resetAppliedGeometry();
                     SwingUtilities.invokeLater(() -> doUpdate());
                 }
             }
@@ -282,6 +297,18 @@ class CefBrowserWr extends CefBrowser_N {
             // right afterwards, which is visible as flicker whenever a sibling
             // Swing component triggers a relayout.
             canvas_.setIgnoreRepaint(true);
+            if (OS.isWindows()) {
+                // The canvas only lends its window handle. If it could take the
+                // Java focus, the native focus handed back from Chromium (see
+                // N_SetFocus) would pull the focus out of Swing fields.
+                canvas_.setFocusable(false);
+            }
+            Color background = getBrowserSettings().background_color;
+            if (background != null) {
+                // Windows erases the canvas with this color wherever Chromium has
+                // not painted yet, e.g. a strip exposed by a resize.
+                canvas_.setBackground(new Color(background.getRGB()));
+            }
             canvas_.addComponentListener(new ComponentAdapter() {
                 @Override
                 public void componentResized(ComponentEvent event) {
@@ -428,6 +455,22 @@ class CefBrowserWr extends CefBrowser_N {
     }
 
     @Override
+    void onNativeCreated() {
+        // Geometry pushed before the native browser was bound was dropped.
+        SwingUtilities.invokeLater(() -> {
+            resetAppliedGeometry();
+            doUpdate();
+        });
+    }
+
+    private void resetAppliedGeometry() {
+        synchronized (content_rect_) {
+            appliedClipping_ = null;
+            appliedSize_ = null;
+        }
+    }
+
+    @Override
     public CefWindowHandler getWindowHandler() {
         return win_handler_;
     }
@@ -504,6 +547,17 @@ class CefBrowserWr extends CefBrowser_N {
                         (int) (bounds.getY() * scaleFactor_),
                         (int) (bounds.getWidth() * scaleFactor_),
                         (int) (bounds.getHeight() * scaleFactor_));
+                if (OS.isWindows()) {
+                    Dimension size =
+                            new Dimension((int) Math.round(bounds.getWidth() * scaleFactor_),
+                                    (int) Math.round(bounds.getHeight() * scaleFactor_));
+                    if (!size.equals(appliedSize_)) {
+                        appliedSize_ = size;
+                        wasResized(size.width, size.height);
+                    }
+                    if (clipping.equals(appliedClipping_)) return;
+                    appliedClipping_ = clipping;
+                }
                 updateUI(clipping, content_rect_);
             }
         }

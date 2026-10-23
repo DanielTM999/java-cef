@@ -125,6 +125,13 @@ void SetWindowBounds(CefWindowHandle browserHandle, const CefRect& contentRect);
 // Set the window size for |browserHandle|.
 void SetWindowSize(CefWindowHandle browserHandle, int width, int height);
 
+#if defined(OS_WIN)
+// Orion fork addition. See MODIFICATIONS.md.
+// Add WS_CLIPCHILDREN to |window| and its ancestors up to the top-level window
+// so they stop painting over the browser's child window.
+void EnsureClipChildren(CefWindowHandle window);
+#endif
+
 #endif  // !defined(OS_MACOSX)
 
 #endif  // USING_JAVA
