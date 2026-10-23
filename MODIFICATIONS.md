@@ -12,7 +12,7 @@ Chromium / third-party notices are preserved unchanged.
 | Fork name | JCEF (Orion fork) |
 | Original project | JCEF - https://github.com/chromiumembedded/java-cef |
 | Base JCEF commit (upstream) | `17e805a` (merged 2026-09-22; previously `6d3e8ca`) |
-| CEF version | `152.0.15+gb3d72fb+chromium-152.0.7977.169` (see `CMakeLists.txt`) |
+| CEF version | `152.0.12+ge1f344f+chromium-152.0.7977.152` (see `CMakeLists.txt`) |
 | First modification date | 2026-07-18 |
 | Purpose | Allow the global CEF context lifecycle to run on a dedicated thread so that native Chromium initialization does not freeze the Swing EDT. |
 
@@ -376,6 +376,8 @@ taken verbatim so the eventual upstream merge is a no-op:
 - chromiumembedded/java-cef#540: `KeyboardHandler::OnPreKeyEvent` tested the
   `ScopedJNIBoolRef` wrapper instead of the Java reference it holds, so the
   check always failed and `CefKeyboardHandler.onPreKeyEvent` was never called.
+  (The PR writes `jboolRef->get()`, which does not compile; the port uses
+  `jboolRef.get()`.)
 - chromiumembedded/java-cef#533: `CefDevToolsClient` removed the pending future
   as soon as the result arrived, racing with the lookup that registers it and
   leaving DevTools calls hanging. The entry is now removed when its future
