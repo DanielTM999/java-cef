@@ -338,6 +338,22 @@ entry's extracted size is checked against the size recorded in the zip. If a
 runtime library still fails to load, the completion marker is deleted so the next
 run downloads the runtime again instead of failing forever.
 
+### Upstream fixes ported ahead of merge
+
+These upstream pull requests were still open when they were ported. Each one is
+taken verbatim so the eventual upstream merge is a no-op:
+
+- chromiumembedded/java-cef#540: `KeyboardHandler::OnPreKeyEvent` tested the
+  `ScopedJNIBoolRef` wrapper instead of the Java reference it holds, so the
+  check always failed and `CefKeyboardHandler.onPreKeyEvent` was never called.
+- chromiumembedded/java-cef#533: `CefDevToolsClient` removed the pending future
+  as soon as the result arrived, racing with the lookup that registers it and
+  leaving DevTools calls hanging. The entry is now removed when its future
+  completes.
+- chromiumembedded/java-cef#550: `NewJNIString` / `GetJNIString` convert through
+  UTF-16 instead of JNI modified UTF-8, so characters outside the BMP (emoji)
+  survive the trip in both directions. Adds `JNIStringTest`.
+
 ### Supported platforms for `DEDICATED_CEF_THREAD`
 
 | Platform | Behavior |
